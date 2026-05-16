@@ -1,0 +1,19 @@
+{
+  "name": "battle-plan-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "apify-client": "^2.12.0",
+    "dotenv": "^16.5.0",
+    "googleapis": "^148.0.0",
+    "nodemailer": "^6.10.1"
+  }
+}

@@ -1,7 +1,6 @@
 /**
- * BattlePlanAgent - Smart Domain Version
- * Logic: Auto-toggles filtering based on MY_DOMAIN in .env
- * Repository: Fallen Crown BV
+ * BattlePlanAgent - Smart Domain Version 1.2
+ * Fix: Updated model naming to resolve 404 Fetch Error
  */
 
 require('dotenv').config();
@@ -53,7 +52,7 @@ async function runAgent() {
 
         // THE SMART FILTER TOGGLE
         const targetMeetings = items.filter(e => {
-            // Logic: If on a personal @gmail account, skip the noise filter and brief everything.
+            // Logic: If on a personal @gmail account, brief everything.
             if (myDomain === 'gmail.com') return true;
 
             // Logic: For corporate domains, only brief meetings involving people outside the organization.
@@ -107,10 +106,11 @@ async function runAgent() {
 }
 
 /**
- * AI Synthesis via Gemini: Removes corporate fluff and focuses on discovery/objectives.
+ * AI Synthesis via Gemini: Uses 'gemini-1.5-flash-latest' to resolve 404 errors.
  */
 async function generateDossier(meeting, snippets) {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    // UPDATED MODEL NAME BELOW
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
     
     const prompt = `
         ACT AS: A Technical Solution Strategy Assistant.
@@ -118,7 +118,7 @@ async function generateDossier(meeting, snippets) {
         
         INSTRUCTIONS:
         - Output ONLY raw HTML (H2, UL, LI).
-        - NO CORPORATE JARGON. (Banned: seamless, landscape, synergy, friction, leverage).
+        - NO CORPORATE FLUFF.
         - If it's a solo block (no attendees), provide a 1-sentence "Focus Tip".
         - If it's a meeting, provide:
           <h2>Objective</h2>: The literal goal based on context.
@@ -191,5 +191,4 @@ async function sendEmail(html) {
     });
 }
 
-// Start Agent
 runAgent();

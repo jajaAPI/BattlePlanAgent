@@ -1,48 +1,45 @@
 /**
- * BattlePlanAgent - Monday Morning Intelligence
- * Author: Jaja (Fallen Crown BV)
- * Logic: Google Calendar -> Gmail Context -> Gemini Synthesis -> Email Digest
+ * BattlePlanAgent - Smart Domain Version
+ * Logic: Auto-toggles filtering based on MY_DOMAIN in .env
+ * Repository: Fallen Crown BV
  */
 
 require('dotenv').config();
 const { google } = require('googleapis');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { ApifyClient } = require('apify-client');
 const nodemailer = require('nodemailer');
 const fs = require('fs').promises;
 const path = require('path');
 
-// File paths for credentials and stored tokens
+// Global paths for the OAuth keys
 const TOKEN_PATH = path.join(process.cwd(), 'token.json');
 const CREDENTIALS_PATH = path.join(process.cwd(), 'credentials.json');
 
-// Required Google Scopes for the agent
+// Required permission scopes for Google API
 const SCOPES = [
     'https://www.googleapis.com/auth/calendar.readonly',
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.send'
 ];
 
-// Initialize external APIs
+// Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const apifyClient = new ApifyClient({ token: process.env.APIFY_TOKEN });
 
 /**
- * Main execution loop
+ * Main execution loop: Fetches, Filters, Analyzes, and Emails.
  */
 async function runAgent() {
     try {
-        // Step 1: Handle Google Auth (Handshake or Token Load)
+        // Authenticate and initialize clients
         const auth = await authenticate();
         const calendar = google.calendar({ version: 'v3', auth });
         const gmail = google.gmail({ version: 'v1', auth });
 
-        // Step 2: Define time window (Next 7 days from now)
+        // Set the scan window: today through 7 days out
         const now = new Date();
         const nextWeek = new Date();
         nextWeek.setDate(now.getDate() + 7);
 
-        // Step 3: Fetch Calendar Events
         const events = await calendar.events.list({
             calendarId: 'primary',
             timeMin: now.toISOString(),
@@ -52,35 +49,39 @@ async function runAgent() {
         });
 
         const items = events.data.items || [];
-        
-        // Filter: Keep only meetings with external participants (skip internal syncs)
+        const myDomain = process.env.MY_DOMAIN.toLowerCase();
+
+        // THE SMART FILTER TOGGLE
         const targetMeetings = items.filter(e => {
+            // Logic: If on a personal @gmail account, skip the noise filter and brief everything.
+            if (myDomain === 'gmail.com') return true;
+
+            // Logic: For corporate domains, only brief meetings involving people outside the organization.
             if (!e.attendees) return false;
-            return e.attendees.some(a => !a.email.endsWith(process.env.MY_DOMAIN));
+            return e.attendees.some(a => !a.email.endsWith(myDomain));
         });
 
         if (targetMeetings.length === 0) {
-            console.log("No external meetings found for the coming week.");
+            console.log("No relevant meetings found for the specified domain criteria.");
             return;
         }
 
-        let fullReportHtml = `<div style="font-family: Arial, sans-serif;">
-                                <h1 style="color: #1d1d1d;">🎯 Your Monday Battle Plan</h1>
-                                <p>Weekly Intelligence Report for ${now.toLocaleDateString()}</p>`;
+        let fullReportHtml = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
+                                <h1 style="color: #0052CC;">🎯 Weekly Battle Plan</h1>
+                                <p style="color: #666;">Mode: ${myDomain === 'gmail.com' ? 'Full Scan' : 'External Only'}</p>`;
 
         for (const meeting of targetMeetings) {
-            // Identify the primary external lead
-            const externalLead = meeting.attendees.find(a => !a.email.endsWith(process.env.MY_DOMAIN)).email;
-            const domain = externalLead.split('@')[1];
+            // Determine search context: Use the first non-self attendee email or the title.
+            const leadEmail = meeting.attendees?.find(a => !a.self)?.email;
+            const searchQuery = leadEmail ? `from:${leadEmail} OR to:${leadEmail}` : meeting.summary;
 
-            // Step 4: Search Gmail for recent context (last 5 messages)
+            // Pull context from Gmail (limit to 3 for speed)
             const gmailRes = await gmail.users.messages.list({
                 userId: 'me',
-                q: `from:${externalLead} OR to:${externalLead}`,
-                maxResults: 5
+                q: searchQuery,
+                maxResults: 3
             });
 
-            // Extract snippets for Gemini to analyze
             let emailSnippets = [];
             if (gmailRes.data.messages) {
                 for (const msg of gmailRes.data.messages) {
@@ -89,43 +90,39 @@ async function runAgent() {
                 }
             }
 
-            // Step 5: Synthesize Dossier with Gemini
-            const dossier = await generateDossier(meeting, emailSnippets, domain);
-            fullReportHtml += dossier + "<hr style='border: 0; border-top: 1px solid #eee; margin: 20px 0;'>";
+            // Generate AI Dossier
+            const dossier = await generateDossier(meeting, emailSnippets);
+            fullReportHtml += dossier + "<hr style='border: 0; border-top: 1px solid #eee; margin: 30px 0;'>";
         }
 
         fullReportHtml += "</div>";
 
-        // Step 6: Dispatch the Weekly Battle Plan
+        // Dispatch final report
         await sendEmail(fullReportHtml);
-        console.log("✅ Success: Battle Plan sent to your inbox.");
+        console.log(`✅ Success: Battle Plan sent for ${targetMeetings.length} items.`);
 
     } catch (error) {
-        console.error("❌ Critical Failure:", error);
+        console.error("❌ Execution Error:", error);
     }
 }
 
 /**
- * AI Synthesis Logic - Zero Fluff / Tactical Focus
+ * AI Synthesis via Gemini: Removes corporate fluff and focuses on discovery/objectives.
  */
-async function generateDossier(meeting, snippets, domain) {
+async function generateDossier(meeting, snippets) {
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     
     const prompt = `
-        ACT AS: A Senior Solution Engineer.
-        GOAL: Brief the rep on a specific meeting for: ${meeting.summary} (${domain}).
-        DATA SOURCES:
-        - Meeting Name: ${meeting.summary}
-        - Description: ${meeting.description || 'No description provided'}
-        - Recent Email Context: ${snippets.join(' | ')}
-
-        REQUIREMENTS:
-        1. Use raw HTML for output (H2, UL, LI).
-        2. NO CORPORATE FLUFF. (Banned: seamless, optimize, landscape, synergy, friction).
-        3. MANDATORY SECTIONS:
-           - <h2>Target Insight</h2>: Based on emails, what is the literal bottleneck?
-           - <h2>Tactical Wedge</h2>: Map one feature to their pain. Provide one specific discovery question.
-        4. If data is thin, explicitly state: "Limited context found. Focus on Discovery."
+        ACT AS: A Technical Solution Strategy Assistant.
+        CONTEXT: Meeting: ${meeting.summary}. Emails: ${snippets.join(' | ')}.
+        
+        INSTRUCTIONS:
+        - Output ONLY raw HTML (H2, UL, LI).
+        - NO CORPORATE JARGON. (Banned: seamless, landscape, synergy, friction, leverage).
+        - If it's a solo block (no attendees), provide a 1-sentence "Focus Tip".
+        - If it's a meeting, provide:
+          <h2>Objective</h2>: The literal goal based on context.
+          <h2>Discovery Questions</h2>: 2 specific questions to uncover pain or bottlenecks.
     `;
 
     const result = await model.generateContent(prompt);
@@ -133,15 +130,13 @@ async function generateDossier(meeting, snippets, domain) {
 }
 
 /**
- * Authentication Handler - Checks for existing token or initiates login
+ * Handles the OAuth2 flow: loads existing token or starts new browser handshake.
  */
 async function authenticate() {
     const content = await fs.readFile(CREDENTIALS_PATH);
     const keys = JSON.parse(content);
     const key = keys.installed || keys.web;
-    const { client_id, client_secret, redirect_uris } = key;
-    
-    const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
+    const oAuth2Client = new google.auth.OAuth2(key.client_id, key.client_secret, key.redirect_uris[0]);
 
     try {
         const token = await fs.readFile(TOKEN_PATH);
@@ -153,33 +148,23 @@ async function authenticate() {
 }
 
 /**
- * Interactive Token Generation for first-time setup
+ * Interactive CLI prompt to capture the Google Auth code.
  */
 async function getNewToken(oAuth2Client) {
-    const authUrl = oAuth2Client.generateAuthUrl({
-        access_type: 'offline',
-        scope: SCOPES,
-        prompt: 'consent'
-    });
-
-    console.log('🚀 Authorize this app by visiting this url:', authUrl);
+    const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
+    console.log('🚀 Step 1: Open this URL to authorize:', authUrl);
     
-    const readline = require('readline').createInterface({
-        input: process.stdin,
-        output: process.stdout,
-    });
-
+    const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
     return new Promise((resolve, reject) => {
-        readline.question('Enter the code from the redirected page here: ', async (code) => {
+        readline.question('Step 2: Paste the "code=" parameter from the URL here: ', async (code) => {
             readline.close();
             try {
                 const { tokens } = await oAuth2Client.getToken(code);
                 oAuth2Client.setCredentials(tokens);
                 await fs.writeFile(TOKEN_PATH, JSON.stringify(tokens));
-                console.log('✅ Success: Token stored to', TOKEN_PATH);
+                console.log('✅ Token stored successfully.');
                 resolve(oAuth2Client);
             } catch (err) {
-                console.error('❌ Error retrieving access token', err);
                 reject(err);
             }
         });
@@ -187,7 +172,7 @@ async function getNewToken(oAuth2Client) {
 }
 
 /**
- * Email Dispatch via Nodemailer (Gmail SMTP)
+ * Transports the final report via Nodemailer/Gmail SMTP.
  */
 async function sendEmail(html) {
     const transporter = nodemailer.createTransport({
@@ -201,10 +186,10 @@ async function sendEmail(html) {
     await transporter.sendMail({
         from: `BattlePlanAgent <${process.env.MY_EMAIL}>`,
         to: process.env.MY_EMAIL,
-        subject: `🎯 Battle Plan: Week of ${new Date().toLocaleDateString()}`,
+        subject: `🎯 Battle Plan: ${new Date().toLocaleDateString()}`,
         html: html
     });
 }
 
-// Execute
+// Start Agent
 runAgent();

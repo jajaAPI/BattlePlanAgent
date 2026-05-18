@@ -1,7 +1,7 @@
 /**
- * BattlePlanAgent - v1.9 (String Sanitization & High-Yield Edition)
+ * BattlePlanAgent - v2.1 (Anti-429 Consolidation Edition)
  * Author: Jaja (Fallen Crown BV)
- * Fix: Handles '@' in .env and ensures all solo blocks are analyzed.
+ * Update: Consolidates all meetings into ONE Gemini call to stay under Free Tier limits.
  */
 
 require('dotenv').config();
@@ -13,10 +13,9 @@ const path = require('path');
 
 const TOKEN_PATH = path.join(process.cwd(), 'token.json');
 const CREDENTIALS_PATH = path.join(process.cwd(), 'credentials.json');
-
 const SCOPES = [
-    'https://www.googleapis.com/auth/calendar.readonly',
-    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/calendar.readonly', 
+    'https://www.googleapis.com/auth/gmail.readonly', 
     'https://www.googleapis.com/auth/gmail.send'
 ];
 
@@ -39,7 +38,6 @@ async function runAgent() {
         console.log(`\n--- 🔎 SCANNING ${calendars.length} CALENDARS ---`);
 
         for (const cal of calendars) {
-            console.log(`📡 Checking: [${cal.summary}]`);
             const events = await calendar.events.list({
                 calendarId: cal.id,
                 timeMin: now.toISOString(),
@@ -47,109 +45,92 @@ async function runAgent() {
                 singleEvents: true,
                 orderBy: 'startTime',
             });
-            
-            if (events.data.items && events.data.items.length > 0) {
-                console.log(`   └─ Found ${events.data.items.length} events.`);
-                allItems = allItems.concat(events.data.items);
-            }
+            if (events.data.items) allItems = allItems.concat(events.data.items);
         }
 
-        // v1.9 FIX: Strip the '@' if the user included it in .env
         const myDomain = process.env.MY_DOMAIN.toLowerCase().replace('@', '');
-        console.log(`\n--- 🛡️ FILTER DECISIONS (Domain: ${myDomain}) ---`);
-
         const targetMeetings = allItems.filter(e => {
-            const title = e.summary || "Untitled Event";
-
-            // If personal Gmail, we want 100% visibility (Solo blocks, CrossFit, Dutch, etc.)
-            if (myDomain === 'gmail.com') {
-                console.log(`✅ KEEP: "${title}" (Personal Mode)`);
-                return true;
-            }
-
-            // Corporate Logic: Ignore solo blocks or internal-only syncs
-            if (!e.attendees) {
-                console.log(`❌ DROP: "${title}" (Solo block - hidden in Corporate mode)`);
-                return false;
-            }
-
-            const hasExternal = e.attendees.some(a => !a.email.endsWith(myDomain));
-            if (hasExternal) {
-                console.log(`✅ KEEP: "${title}" (External Guest)`);
-                return true;
-            } else {
-                console.log(`❌ DROP: "${title}" (Internal Sync)`);
-                return false;
-            }
+            if (myDomain === 'gmail.com') return true;
+            if (!e.attendees) return false;
+            return e.attendees.some(a => !a.email.endsWith(myDomain));
         });
 
-        if (targetMeetings.length === 0) {
-            console.log("\n⚠️ Outcome: No meetings passed the criteria.");
-            return;
-        }
+        if (targetMeetings.length === 0) return console.log("⚠️ No meetings passed the filter.");
 
-        console.log(`\n🚀 Processing ${targetMeetings.length} dossiers...`);
+        console.log(`🚀 Gathering context for ${targetMeetings.length} items...`);
 
-        let fullReportHtml = `<div style="font-family: 'Helvetica', sans-serif; max-width: 600px; margin: auto; color: #333;">
-                                <h1 style="color: #0052CC; border-bottom: 2px solid #0052CC;">🎯 Weekly Battle Plan</h1>`;
-
+        // Step 1: Collect ALL context locally (No AI calls yet)
+        const meetingsWithContext = [];
         for (const meeting of targetMeetings) {
             const leadEmail = meeting.attendees?.find(a => !a.self)?.email;
             const searchQuery = leadEmail ? `from:${leadEmail} OR to:${leadEmail}` : meeting.summary;
 
-            const gmailRes = await gmail.users.messages.list({
-                userId: 'me',
-                q: searchQuery,
-                maxResults: 3
-            });
-
-            let emailSnippets = [];
+            const gmailRes = await gmail.users.messages.list({ userId: 'me', q: searchQuery, maxResults: 2 });
+            let snippets = [];
             if (gmailRes.data.messages) {
                 for (const msg of gmailRes.data.messages) {
                     const content = await gmail.users.messages.get({ userId: 'me', id: msg.id });
-                    emailSnippets.push(content.data.snippet);
+                    snippets.push(content.data.snippet);
                 }
             }
-
-            const dossier = await generateDossier(meeting, emailSnippets);
-            fullReportHtml += dossier + "<hr style='border: 0; border-top: 1px solid #ddd; margin: 30px 0;'>";
+            
+            meetingsWithContext.push({
+                title: meeting.summary,
+                description: meeting.description || "N/A",
+                emails: snippets.join(" | ")
+            });
+            console.log(`   📂 Context Ready: ${meeting.summary}`);
         }
 
-        fullReportHtml += "</div>";
+        // Step 2: Make ONE single call to Gemini with the full batch
+        console.log(`🤖 Synthesizing Full Battle Plan via Gemini 2.5 Flash (1 Request)...`);
+        const fullReportHtml = await generateMasterReport(meetingsWithContext);
+
+        // Step 3: Dispatch
         await sendEmail(fullReportHtml);
-        console.log(`\n✅ Mission Accomplished: Battle Plan sent.`);
+        console.log(`\n✅ Success: Consolidated Battle Plan sent to ${process.env.MY_EMAIL}.`);
+        console.log(`📊 Quota Saved: 1 call used instead of ${targetMeetings.length}.`);
 
     } catch (error) {
-        console.error("\n❌ Critical Failure:", error);
+        console.error("❌ Critical Failure:", error);
     }
 }
 
-async function generateDossier(meeting, snippets) {
+/**
+ * Single-Call Synthesis: Processes all meetings in one prompt.
+ */
+async function generateMasterReport(meetings) {
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-    const context = snippets.length > 0 ? snippets.join(' | ') : "NO PRIOR EMAIL HISTORY.";
     
-    const prompt = `
-        ACT AS: A Senior Strategic Advisor for Jaja.
-        USER PROFILE: Solutions Engineer, Atlassian, CrossFit Athlete, Father, Dutch Learner.
-        EVENT: ${meeting.summary}
-        CONTEXT: ${context}
+    // Prepare the payload
+    const meetingsList = meetings.map((m, i) => 
+        `MEETING ${i+1}: ${m.title}\nCONTEXT: ${m.emails}\nDESC: ${m.description}`
+    ).join("\n\n---\n\n");
 
-        BRUTAL OBJECTIVITY MODE: ON
-        - Output HTML (H2, UL, LI).
-        - No AI fluff. No "I hope this helps."
-        - If Dutch/italki: Provide 3 advanced vocabulary words (C1 level) related to the topic.
-        - If CrossFit: Provide one mental cue for heavy lifting (e.g., "Leg drive" or "Brace core").
-        - If Family: Suggest one way to be 100% present.
-        - SECTIONS:
-          <h2>The Objective</h2>
-          <h2>Tactical Wedge</h2>
+    const prompt = `
+        ACT AS: A Senior Strategic Advisor for Jaja (Solution Engineer, CrossFit Athlete, Father, Dutch Learner).
+        TASK: Analyze the following list of ${meetings.length} meetings and generate a high-yield HTML report.
+
+        INSTRUCTIONS:
+        - Output ONLY raw HTML. Wrap each meeting analysis in a <section> tag.
+        - BE BRUTALLY HONEST. If a meeting looks like waste, say so.
+        - Use Metric units where applicable.
+        - If Dutch/italki: Provide 3 C1-level vocabulary words for the topic.
+        - If CrossFit: Provide a specific mental cue (Brace, Drive, etc.).
+        - For each meeting, provide:
+          <h2>[Meeting Title]</h2>
+          <p><strong>Objective:</strong> [Brutal assessment of the goal]</p>
+          <p><strong>Tactical Wedge:</strong> [One sharp question or action item]</p>
+
+        MEETINGS TO ANALYZE:
+        ${meetingsList}
     `;
 
     const result = await model.generateContent(prompt);
     return result.response.text();
 }
 
-/** * AUTH & DISPATCH HELPERS */
+/** AUTH & EMAIL HELPERS (Unstripped) **/
 async function authenticate() {
     const content = await fs.readFile(CREDENTIALS_PATH);
     const keys = JSON.parse(content);
@@ -159,38 +140,34 @@ async function authenticate() {
         const token = await fs.readFile(TOKEN_PATH);
         oAuth2Client.setCredentials(JSON.parse(token));
         return oAuth2Client;
-    } catch (e) {
-        return getNewToken(oAuth2Client);
-    }
+    } catch (e) { return getNewToken(oAuth2Client); }
 }
 
 async function getNewToken(oAuth2Client) {
     const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
-    console.log('🚀 Auth Required:', authUrl);
+    console.log('🚀 Auth:', authUrl);
     const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
-    return new Promise((resolve, reject) => {
-        readline.question('Paste code here: ', async (code) => {
+    return new Promise((resolve) => {
+        readline.question('Code: ', async (code) => {
             readline.close();
-            try {
-                const { tokens } = await oAuth2Client.getToken(code);
-                oAuth2Client.setCredentials(tokens);
-                await fs.writeFile(TOKEN_PATH, JSON.stringify(tokens));
-                resolve(oAuth2Client);
-            } catch (err) { reject(err); }
+            const { tokens } = await oAuth2Client.getToken(code);
+            oAuth2Client.setCredentials(tokens);
+            await fs.writeFile(TOKEN_PATH, JSON.stringify(tokens));
+            resolve(oAuth2Client);
         });
     });
 }
 
 async function sendEmail(html) {
-    const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user: process.env.MY_EMAIL, pass: process.env.GMAIL_APP_PASSWORD },
+    const transporter = nodemailer.createTransport({ 
+        service: 'gmail', 
+        auth: { user: process.env.MY_EMAIL, pass: process.env.GMAIL_APP_PASSWORD } 
     });
-    await transporter.sendMail({
-        from: `BattlePlanAgent <${process.env.MY_EMAIL}>`,
-        to: process.env.MY_EMAIL,
-        subject: `🎯 Battle Plan: ${new Date().toLocaleDateString()}`,
-        html: html
+    await transporter.sendMail({ 
+        from: `BattlePlanAgent <${process.env.MY_EMAIL}>`, 
+        to: process.env.MY_EMAIL, 
+        subject: `🎯 Master Battle Plan: ${new Date().toLocaleDateString()}`, 
+        html: `<html><body style="font-family: sans-serif; max-width: 700px; margin: auto; color: #333;">${html}</body></html>` 
     });
 }
 

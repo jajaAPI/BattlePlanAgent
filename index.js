@@ -1,7 +1,7 @@
 /**
- * BattlePlanAgent - v1.8 (Full Trace Edition)
+ * BattlePlanAgent - v1.9 (String Sanitization & High-Yield Edition)
  * Author: Jaja (Fallen Crown BV)
- * Updates: Comprehensive terminal logging and fixed solo-event visibility.
+ * Fix: Handles '@' in .env and ensures all solo blocks are analyzed.
  */
 
 require('dotenv').config();
@@ -32,7 +32,6 @@ async function runAgent() {
         const nextWeek = new Date();
         nextWeek.setDate(now.getDate() + 7);
 
-        // Fetch all sub-calendars
         const calendarList = await calendar.calendarList.list();
         const calendars = calendarList.data.items || [];
         
@@ -55,19 +54,20 @@ async function runAgent() {
             }
         }
 
-        const myDomain = process.env.MY_DOMAIN.toLowerCase();
+        // v1.9 FIX: Strip the '@' if the user included it in .env
+        const myDomain = process.env.MY_DOMAIN.toLowerCase().replace('@', '');
         console.log(`\n--- 🛡️ FILTER DECISIONS (Domain: ${myDomain}) ---`);
 
         const targetMeetings = allItems.filter(e => {
             const title = e.summary || "Untitled Event";
 
-            // LOGIC 1: Personal Mode (gmail.com)
+            // If personal Gmail, we want 100% visibility (Solo blocks, CrossFit, Dutch, etc.)
             if (myDomain === 'gmail.com') {
-                console.log(`✅ KEEP: "${title}" (Personal domain - bypass filters)`);
+                console.log(`✅ KEEP: "${title}" (Personal Mode)`);
                 return true;
             }
 
-            // LOGIC 2: Corporate Mode
+            // Corporate Logic: Ignore solo blocks or internal-only syncs
             if (!e.attendees) {
                 console.log(`❌ DROP: "${title}" (Solo block - hidden in Corporate mode)`);
                 return false;
@@ -75,23 +75,23 @@ async function runAgent() {
 
             const hasExternal = e.attendees.some(a => !a.email.endsWith(myDomain));
             if (hasExternal) {
-                console.log(`✅ KEEP: "${title}" (External guest found)`);
+                console.log(`✅ KEEP: "${title}" (External Guest)`);
                 return true;
             } else {
-                console.log(`❌ DROP: "${title}" (Internal sync only)`);
+                console.log(`❌ DROP: "${title}" (Internal Sync)`);
                 return false;
             }
         });
 
         if (targetMeetings.length === 0) {
-            console.log("\n⚠️ Outcome: Zero meetings survived the filter.");
+            console.log("\n⚠️ Outcome: No meetings passed the criteria.");
             return;
         }
 
-        console.log(`\n🚀 Processing ${targetMeetings.length} dossiers via Gemini...`);
+        console.log(`\n🚀 Processing ${targetMeetings.length} dossiers...`);
 
-        let fullReportHtml = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
-                                <h1 style="color: #0052CC; border-bottom: 3px solid #0052CC; padding-bottom: 10px;">🎯 Weekly Battle Plan</h1>`;
+        let fullReportHtml = `<div style="font-family: 'Helvetica', sans-serif; max-width: 600px; margin: auto; color: #333;">
+                                <h1 style="color: #0052CC; border-bottom: 2px solid #0052CC;">🎯 Weekly Battle Plan</h1>`;
 
         for (const meeting of targetMeetings) {
             const leadEmail = meeting.attendees?.find(a => !a.self)?.email;
@@ -112,12 +112,12 @@ async function runAgent() {
             }
 
             const dossier = await generateDossier(meeting, emailSnippets);
-            fullReportHtml += dossier + "<hr style='border: 0; border-top: 1px solid #eee; margin: 30px 0;'>";
+            fullReportHtml += dossier + "<hr style='border: 0; border-top: 1px solid #ddd; margin: 30px 0;'>";
         }
 
         fullReportHtml += "</div>";
         await sendEmail(fullReportHtml);
-        console.log(`\n✅ Mission Accomplished: Battle Plan dispatched to ${process.env.MY_EMAIL}.`);
+        console.log(`\n✅ Mission Accomplished: Battle Plan sent.`);
 
     } catch (error) {
         console.error("\n❌ Critical Failure:", error);
@@ -129,14 +129,17 @@ async function generateDossier(meeting, snippets) {
     const context = snippets.length > 0 ? snippets.join(' | ') : "NO PRIOR EMAIL HISTORY.";
     
     const prompt = `
-        ACT AS: A Senior Strategic Advisor for Jaja (Solution Engineer & Athlete).
-        MEETING: ${meeting.summary}
+        ACT AS: A Senior Strategic Advisor for Jaja.
+        USER PROFILE: Solutions Engineer, Atlassian, CrossFit Athlete, Father, Dutch Learner.
+        EVENT: ${meeting.summary}
         CONTEXT: ${context}
 
         BRUTAL OBJECTIVITY MODE: ON
-        - Output raw HTML only (H2, UL, LI).
-        - If the title is "italki" or "Dutch", provide a specific 30-min preparation sprint.
-        - If context is missing, don't guess—tell Jaja why this meeting might be a waste of time.
+        - Output HTML (H2, UL, LI).
+        - No AI fluff. No "I hope this helps."
+        - If Dutch/italki: Provide 3 advanced vocabulary words (C1 level) related to the topic.
+        - If CrossFit: Provide one mental cue for heavy lifting (e.g., "Leg drive" or "Brace core").
+        - If Family: Suggest one way to be 100% present.
         - SECTIONS:
           <h2>The Objective</h2>
           <h2>Tactical Wedge</h2>
@@ -146,9 +149,7 @@ async function generateDossier(meeting, snippets) {
     return result.response.text();
 }
 
-/**
- * AUTHENTICATION & DISPATCH
- */
+/** * AUTH & DISPATCH HELPERS */
 async function authenticate() {
     const content = await fs.readFile(CREDENTIALS_PATH);
     const keys = JSON.parse(content);

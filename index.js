@@ -1,7 +1,7 @@
 /**
- * BattlePlanAgent - v1.6 (High-Quality Strategy Edition)
+ * BattlePlanAgent - v1.8 (Full Trace Edition)
  * Author: Jaja (Fallen Crown BV)
- * Updates: Multi-calendar support, objective-first prompting, and solo-block visibility.
+ * Updates: Comprehensive terminal logging and fixed solo-event visibility.
  */
 
 require('dotenv').config();
@@ -32,16 +32,15 @@ async function runAgent() {
         const nextWeek = new Date();
         nextWeek.setDate(now.getDate() + 7);
 
-        // Fetch all sub-calendars (Work, italki, Personal, etc.)
+        // Fetch all sub-calendars
         const calendarList = await calendar.calendarList.list();
         const calendars = calendarList.data.items || [];
         
         let allItems = [];
-        console.log(`🔎 Found ${calendars.length} calendars. Scanning for events...`);
+        console.log(`\n--- 🔎 SCANNING ${calendars.length} CALENDARS ---`);
 
         for (const cal of calendars) {
-            // Log calendar names to verify italki is being reached
-            console.log(`   - Scanning: ${cal.summary}`);
+            console.log(`📡 Checking: [${cal.summary}]`);
             const events = await calendar.events.list({
                 calendarId: cal.id,
                 timeMin: now.toISOString(),
@@ -49,37 +48,59 @@ async function runAgent() {
                 singleEvents: true,
                 orderBy: 'startTime',
             });
-            if (events.data.items) {
+            
+            if (events.data.items && events.data.items.length > 0) {
+                console.log(`   └─ Found ${events.data.items.length} events.`);
                 allItems = allItems.concat(events.data.items);
             }
         }
 
         const myDomain = process.env.MY_DOMAIN.toLowerCase();
+        console.log(`\n--- 🛡️ FILTER DECISIONS (Domain: ${myDomain}) ---`);
 
-        // Filter: If MY_DOMAIN is gmail.com, we want the full picture (Lessons + Meetings)
         const targetMeetings = allItems.filter(e => {
-            if (myDomain === 'gmail.com') return true; 
-            if (!e.attendees) return false;
-            return e.attendees.some(a => !a.email.endsWith(myDomain));
+            const title = e.summary || "Untitled Event";
+
+            // LOGIC 1: Personal Mode (gmail.com)
+            if (myDomain === 'gmail.com') {
+                console.log(`✅ KEEP: "${title}" (Personal domain - bypass filters)`);
+                return true;
+            }
+
+            // LOGIC 2: Corporate Mode
+            if (!e.attendees) {
+                console.log(`❌ DROP: "${title}" (Solo block - hidden in Corporate mode)`);
+                return false;
+            }
+
+            const hasExternal = e.attendees.some(a => !a.email.endsWith(myDomain));
+            if (hasExternal) {
+                console.log(`✅ KEEP: "${title}" (External guest found)`);
+                return true;
+            } else {
+                console.log(`❌ DROP: "${title}" (Internal sync only)`);
+                return false;
+            }
         });
 
         if (targetMeetings.length === 0) {
-            console.log("❌ No meetings passed the filter.");
+            console.log("\n⚠️ Outcome: Zero meetings survived the filter.");
             return;
         }
 
-        let fullReportHtml = `<div style="font-family: 'Helvetica', sans-serif; max-width: 600px; margin: auto; color: #333;">
-                                <h1 style="color: #0052CC; border-bottom: 3px solid #0052CC;">🎯 Battle Plan: ${now.toLocaleDateString()}</h1>`;
+        console.log(`\n🚀 Processing ${targetMeetings.length} dossiers via Gemini...`);
+
+        let fullReportHtml = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
+                                <h1 style="color: #0052CC; border-bottom: 3px solid #0052CC; padding-bottom: 10px;">🎯 Weekly Battle Plan</h1>`;
 
         for (const meeting of targetMeetings) {
-            // Context logic: Get email history for any guest that isn't you
             const leadEmail = meeting.attendees?.find(a => !a.self)?.email;
             const searchQuery = leadEmail ? `from:${leadEmail} OR to:${leadEmail}` : meeting.summary;
 
             const gmailRes = await gmail.users.messages.list({
                 userId: 'me',
                 q: searchQuery,
-                maxResults: 5 // Increased depth for better context
+                maxResults: 3
             });
 
             let emailSnippets = [];
@@ -91,40 +112,34 @@ async function runAgent() {
             }
 
             const dossier = await generateDossier(meeting, emailSnippets);
-            fullReportHtml += dossier + "<hr style='border: 0; border-top: 1px solid #ddd; margin: 30px 0;'>";
+            fullReportHtml += dossier + "<hr style='border: 0; border-top: 1px solid #eee; margin: 30px 0;'>";
         }
 
         fullReportHtml += "</div>";
         await sendEmail(fullReportHtml);
-        console.log(`✅ Success: High-quality report dispatched.`);
+        console.log(`\n✅ Mission Accomplished: Battle Plan dispatched to ${process.env.MY_EMAIL}.`);
 
     } catch (error) {
-        console.error("❌ Execution Error:", error);
+        console.error("\n❌ Critical Failure:", error);
     }
 }
 
 async function generateDossier(meeting, snippets) {
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const context = snippets.length > 0 ? snippets.join(' | ') : "NO PRIOR EMAIL HISTORY.";
     
-    const contextStr = snippets.length > 0 ? snippets.join(' | ') : "NO EMAIL CONTEXT FOUND.";
-    
-    // High-stakes prompt: Demands objective strategy over AI fluff
     const prompt = `
-        ACT AS: A Lead Solution Engineer and Strategic Advisor.
-        USER: Jaja (Solutions Engineer, Atlassian, CrossFit athlete, Father, Dutch learner).
+        ACT AS: A Senior Strategic Advisor for Jaja (Solution Engineer & Athlete).
         MEETING: ${meeting.summary}
-        DESCRIPTION: ${meeting.description || 'N/A'}
-        CONTEXT: ${contextStr}
+        CONTEXT: ${context}
 
-        CRITICAL INSTRUCTIONS:
-        - Output HTML (H2, UL, LI).
-        - BE BRUTALLY HONEST AND OBJECTIVE. Avoid "typical AI assistant" tone.
-        - If the meeting is a "Test meeting" or "Sync" between family/self, identify if it's high-value or just noise.
-        - For Dutch lessons (italki): Provide a 30-minute "Immersion Sprint" plan.
-        - If context is missing, call out the ambiguity rather than guessing.
+        BRUTAL OBJECTIVITY MODE: ON
+        - Output raw HTML only (H2, UL, LI).
+        - If the title is "italki" or "Dutch", provide a specific 30-min preparation sprint.
+        - If context is missing, don't guess—tell Jaja why this meeting might be a waste of time.
         - SECTIONS:
-          <h2>The Objective</h2> (What is the real goal here? Cut through the fluff.)
-          <h2>Tactical Wedge</h2> (A sharp discovery question or a "Solution Engineer" perspective.)
+          <h2>The Objective</h2>
+          <h2>Tactical Wedge</h2>
     `;
 
     const result = await model.generateContent(prompt);
@@ -132,7 +147,7 @@ async function generateDossier(meeting, snippets) {
 }
 
 /**
- * AUTH & EMAIL HELPERS
+ * AUTHENTICATION & DISPATCH
  */
 async function authenticate() {
     const content = await fs.readFile(CREDENTIALS_PATH);
@@ -150,10 +165,10 @@ async function authenticate() {
 
 async function getNewToken(oAuth2Client) {
     const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
-    console.log('🚀 Authorize here:', authUrl);
+    console.log('🚀 Auth Required:', authUrl);
     const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
     return new Promise((resolve, reject) => {
-        readline.question('Paste code: ', async (code) => {
+        readline.question('Paste code here: ', async (code) => {
             readline.close();
             try {
                 const { tokens } = await oAuth2Client.getToken(code);

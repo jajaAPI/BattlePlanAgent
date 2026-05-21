@@ -15,7 +15,7 @@ export default function GoogleLogin({ onLoginSuccess }: { onLoginSuccess: (token
   const [request, response, promptAsync] = Google.useAuthRequest({
     // IMPORTANT: Replace these with your actual IDs from the Google Console
     iosClientId: '326304808014-m9je1149ff6tmvhpm6sl0gdvsic99fsk.apps.googleusercontent.com',
-    webClientId: '326304808014-k6k4i9ujhj90ebbsjal7a6mp5sask7jm.apps.googleusercontent.com',
+    webClientId: '326304808014-m9je1149ff6tmvhpm6sl0gdvsic99fsk.apps.googleusercontent.com',
     scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
   });
 

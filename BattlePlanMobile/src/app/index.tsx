@@ -1,60 +1,66 @@
 /**
- * App.tsx - v1.4 (Gemini AI Synthesis Engine)
+ * App.tsx - v1.6 (1-Week Gemini AI Synthesis Engine)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Fetches live Calendar data and uses Gemini to synthesize tactical Battle Plans.
+ * Purpose: Fetches live Calendar data (7-day horizon) and uses Gemini to synthesize tactical Battle Plans.
  */
 
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, SafeAreaView, StatusBar, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// 🚨 RELATIVE PATH TO AUTH COMPONENT 🚨
+// Import the local GoogleLogin component for authentication
 import GoogleLogin from './GoogleLogin';
 
 // Initialize the Gemini AI client using the secure environment variable
-// The '!' tells TypeScript we guarantee this variable exists
+// The '!' guarantees to TypeScript that this environment variable is populated
 const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
 
 export default function App() {
-  // State management
+  // State management for auth, data, and UI feedback
   const [token, setToken] = useState<string | null>(null);
   const [battlePlan, setBattlePlan] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [statusText, setStatusText] = useState(''); // To tell you what the engine is doing
+  const [statusText, setStatusText] = useState(''); 
 
-  // Kick off the pipeline when the OAuth token is received
+  // Kick off the pipeline immediately when the OAuth token is successfully received
   useEffect(() => {
     if (token) {
       executeBattlePlanPipeline(token);
     }
   }, [token]);
 
-  // Master function that runs the two-stage pipeline
+  // Master function that executes the fetch and AI synthesis sequence
   const executeBattlePlanPipeline = async (accessToken: string) => {
     setLoading(true);
     
     try {
       // STAGE 1: Fetch raw calendar data
       setStatusText('Intercepting Google Calendar Feed...');
+      
+      // Define the time window: Now until exactly 7 days (1 week) from now
       const now = new Date();
-      const tomorrow = new Date();
-      tomorrow.setDate(now.getDate() + 1);
+      const horizonDate = new Date();
+      horizonDate.setDate(now.getDate() + 7);
 
+      // Hit the Google Calendar API with the expanded 7-day window
       const calendarResponse = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${now.toISOString()}&timeMax=${tomorrow.toISOString()}&singleEvents=true&orderBy=startTime`,
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${now.toISOString()}&timeMax=${horizonDate.toISOString()}&singleEvents=true&orderBy=startTime`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
 
       const calendarData = await calendarResponse.json();
+      
+      // Filter out solo blocks to focus only on actual meetings with other human beings
       const validMeetings = (calendarData.items || []).filter((e: any) => e.attendees && e.attendees.length > 0);
 
+      // If no valid meetings exist in the next 7 days, halt the pipeline and update UI
       if (validMeetings.length === 0) {
         setBattlePlan([]);
         setLoading(false);
         return;
       }
 
-      // Format raw data into a condensed string to save AI tokens
+      // Format raw data into a condensed string to maximize AI token efficiency
       const promptData = validMeetings.map((m: any) => 
         `Meeting: ${m.summary} | Attendees: ${m.attendees?.length || 0} | Description: ${m.description?.substring(0, 100) || 'None'}`
       ).join('\n');
@@ -63,7 +69,7 @@ export default function App() {
       setStatusText('Synthesizing Tactical Wedges...');
       const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
       
-      // Strict prompt engineering to force Gemini into our preferred JSON output
+      // Strict prompt engineering to force Gemini into our preferred JSON output structure
       const prompt = `
         You are a brutally honest, highly strategic Solution Engineer advisor for Jaja at Fallen Crown BV. 
         Analyze the following schedule. For each meeting, generate a tactical 'Battle Plan' object.
@@ -78,13 +84,14 @@ export default function App() {
         Output strictly as a JSON array of objects with keys: "id" (string), "title" (string), "objective" (string), "wedge" (string). Do not include markdown blocks like \`\`\`json.
       `;
 
+      // Execute the call to Gemini
       const aiResponse = await model.generateContent(prompt);
       let aiText = aiResponse.response.text();
       
-      // Sanitize the output in case Gemini returns markdown formatting anyway
+      // Sanitize the output to strip any markdown formatting Gemini might inject
       aiText = aiText.replace(/```json/g, '').replace(/```/g, '').trim();
       
-      // Parse the JSON string into executable React state
+      // Parse the sanitized JSON string into executable React state array
       const synthesizedPlan = JSON.parse(aiText);
       setBattlePlan(synthesizedPlan);
 
@@ -104,6 +111,7 @@ export default function App() {
         <View style={styles.authBox}>
           <Text style={styles.authHeader}>Fallen Crown BV</Text>
           <Text style={styles.authSubtext}>Secure Access Required</Text>
+          {/* Mount the Google Auth button and pass the state setter as a prop */}
           <GoogleLogin onLoginSuccess={(accessToken) => setToken(accessToken)} />
         </View>
       </SafeAreaView>
@@ -118,21 +126,22 @@ export default function App() {
         
         <View style={styles.headerRow}>
           <Text style={styles.header}>🎯 Battle Plan</Text>
+          {/* Logout button resets token to null, instantly killing the session and returning to lock screen */}
           <TouchableOpacity onPress={() => setToken(null)}>
             <Text style={styles.logoutText}>Logout</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Dynamic Loading and Rendering states */}
+        {/* Dynamic Loading and Rendering states based on pipeline status */}
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#0052CC" />
             <Text style={styles.loadingText}>{statusText}</Text>
           </View>
         ) : battlePlan.length === 0 ? (
-          <Text style={styles.emptyText}>No external meetings found for the next 24 hours.</Text>
+          <Text style={styles.emptyText}>No external meetings found for the next 7 days.</Text>
         ) : (
-          // Map through the AI-synthesized data
+          // Map through the AI-synthesized data and construct the UI cards
           battlePlan.map((item, index) => (
             <View key={item.id || index.toString()} style={styles.card}>
               <View style={styles.cardHeader}>
@@ -155,7 +164,7 @@ export default function App() {
   );
 }
 
-// UI Styling
+// Inline styles for the UI components
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   scrollContent: { padding: 20, paddingTop: 40 },

@@ -1,51 +1,96 @@
 /**
- * App.tsx - v1.3 (Live Calendar Feed)
+ * App.tsx - v1.4 (Gemini AI Synthesis Engine)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Fetches live data and renders the Battle Plan.
+ * Purpose: Fetches live Calendar data and uses Gemini to synthesize tactical Battle Plans.
  */
 
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, SafeAreaView, StatusBar, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// 🚨 CORRECTED PATH 🚨
-// Because GoogleLogin.tsx is sitting right next to index.tsx inside src/app/, we use './'
+// 🚨 RELATIVE PATH TO AUTH COMPONENT 🚨
 import GoogleLogin from './GoogleLogin';
 
-export default function App() {
-  // State management for OAuth token and fetched meetings
-  const [token, setToken] = useState<string | null>(null);
-  const [meetings, setMeetings] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+// Initialize the Gemini AI client using the secure environment variable
+// The '!' tells TypeScript we guarantee this variable exists
+const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
 
-  // Trigger the fetch the moment the token state is populated
+export default function App() {
+  // State management
+  const [token, setToken] = useState<string | null>(null);
+  const [battlePlan, setBattlePlan] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState(''); // To tell you what the engine is doing
+
+  // Kick off the pipeline when the OAuth token is received
   useEffect(() => {
     if (token) {
-      fetchCalendarEvents(token);
+      executeBattlePlanPipeline(token);
     }
   }, [token]);
 
-  // Async function to hit the Google Calendar API
-  const fetchCalendarEvents = async (accessToken: string) => {
+  // Master function that runs the two-stage pipeline
+  const executeBattlePlanPipeline = async (accessToken: string) => {
     setLoading(true);
+    
     try {
-      // Set the time window: Now until 24 hours from now
+      // STAGE 1: Fetch raw calendar data
+      setStatusText('Intercepting Google Calendar Feed...');
       const now = new Date();
       const tomorrow = new Date();
       tomorrow.setDate(now.getDate() + 1);
 
-      // Fetch from Google's primary calendar endpoint
-      const response = await fetch(
+      const calendarResponse = await fetch(
         `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${now.toISOString()}&timeMax=${tomorrow.toISOString()}&singleEvents=true&orderBy=startTime`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
 
-      const data = await response.json();
+      const calendarData = await calendarResponse.json();
+      const validMeetings = (calendarData.items || []).filter((e: any) => e.attendees && e.attendees.length > 0);
+
+      if (validMeetings.length === 0) {
+        setBattlePlan([]);
+        setLoading(false);
+        return;
+      }
+
+      // Format raw data into a condensed string to save AI tokens
+      const promptData = validMeetings.map((m: any) => 
+        `Meeting: ${m.summary} | Attendees: ${m.attendees?.length || 0} | Description: ${m.description?.substring(0, 100) || 'None'}`
+      ).join('\n');
+
+      // STAGE 2: Synthesize with Gemini
+      setStatusText('Synthesizing Tactical Wedges...');
+      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
       
-      // Filter out solo blocks (events with no attendees) to focus only on actual meetings
-      const validMeetings = (data.items || []).filter((e: any) => e.attendees && e.attendees.length > 0);
-      setMeetings(validMeetings);
+      // Strict prompt engineering to force Gemini into our preferred JSON output
+      const prompt = `
+        You are a brutally honest, highly strategic Solution Engineer advisor for Jaja at Fallen Crown BV. 
+        Analyze the following schedule. For each meeting, generate a tactical 'Battle Plan' object.
+        
+        Rules:
+        1. 'objective': One brutal, objective sentence on the actual goal of this meeting.
+        2. 'wedge': One sharp, tactical question or statement Jaja should use to control the room.
+        
+        Raw Schedule:
+        ${promptData}
+        
+        Output strictly as a JSON array of objects with keys: "id" (string), "title" (string), "objective" (string), "wedge" (string). Do not include markdown blocks like \`\`\`json.
+      `;
+
+      const aiResponse = await model.generateContent(prompt);
+      let aiText = aiResponse.response.text();
+      
+      // Sanitize the output in case Gemini returns markdown formatting anyway
+      aiText = aiText.replace(/```json/g, '').replace(/```/g, '').trim();
+      
+      // Parse the JSON string into executable React state
+      const synthesizedPlan = JSON.parse(aiText);
+      setBattlePlan(synthesizedPlan);
+
     } catch (error) {
-      console.error("Calendar Sync Failed:", error);
+      console.error("Pipeline Failed:", error);
+      setStatusText('CRITICAL ERROR: Pipeline Failure');
     } finally {
       setLoading(false);
     }
@@ -59,8 +104,6 @@ export default function App() {
         <View style={styles.authBox}>
           <Text style={styles.authHeader}>Fallen Crown BV</Text>
           <Text style={styles.authSubtext}>Secure Access Required</Text>
-          
-          {/* Inject the Google Login button component */}
           <GoogleLogin onLoginSuccess={(accessToken) => setToken(accessToken)} />
         </View>
       </SafeAreaView>
@@ -75,26 +118,34 @@ export default function App() {
         
         <View style={styles.headerRow}>
           <Text style={styles.header}>🎯 Battle Plan</Text>
-          
-          {/* Logout button resets token to null, forcing the auth screen to render */}
           <TouchableOpacity onPress={() => setToken(null)}>
             <Text style={styles.logoutText}>Logout</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Conditional rendering based on API fetch state */}
+        {/* Dynamic Loading and Rendering states */}
         {loading ? (
-          <ActivityIndicator size="large" color="#0052CC" style={{ marginTop: 50 }} />
-        ) : meetings.length === 0 ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#0052CC" />
+            <Text style={styles.loadingText}>{statusText}</Text>
+          </View>
+        ) : battlePlan.length === 0 ? (
           <Text style={styles.emptyText}>No external meetings found for the next 24 hours.</Text>
         ) : (
-          // Map through the live meeting data and render cards
-          meetings.map((item) => (
-            <View key={item.id} style={styles.card}>
-              <Text style={styles.cardTitle}>{item.summary || "Untitled Event"}</Text>
+          // Map through the AI-synthesized data
+          battlePlan.map((item, index) => (
+            <View key={item.id || index.toString()} style={styles.card}>
+              <View style={styles.cardHeader}>
+                <Text style={styles.cardTitle}>{item.title}</Text>
+              </View>
               
-              <Text style={styles.label}>AI PENDING</Text>
-              <Text style={styles.bodyText}>Gemini synthesis not yet connected to this client.</Text>
+              <Text style={styles.label}>STRATEGIC OBJECTIVE</Text>
+              <Text style={styles.bodyText}>{item.objective}</Text>
+
+              <View style={styles.divider} />
+
+              <Text style={styles.label}>TACTICAL WEDGE</Text>
+              <Text style={styles.wedgeText}>{item.wedge}</Text>
             </View>
           ))
         )}
@@ -104,7 +155,7 @@ export default function App() {
   );
 }
 
-// Inline styles for the UI components
+// UI Styling
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   scrollContent: { padding: 20, paddingTop: 40 },
@@ -115,9 +166,14 @@ const styles = StyleSheet.create({
   authBox: { width: '80%', alignItems: 'center', backgroundColor: '#111', padding: 30, borderRadius: 16, borderWidth: 1, borderColor: '#333' },
   authHeader: { color: '#FFF', fontSize: 24, fontWeight: 'bold', marginBottom: 10 },
   authSubtext: { color: '#888', fontSize: 14, marginBottom: 20 },
-  card: { backgroundColor: '#1A1A1A', padding: 24, borderRadius: 20, borderLeftWidth: 4, borderLeftColor: '#333', marginBottom: 20 },
-  cardTitle: { color: '#FFF', fontSize: 20, fontWeight: 'bold', marginBottom: 15 },
+  loadingContainer: { marginTop: 50, alignItems: 'center' },
+  loadingText: { color: '#0052CC', marginTop: 15, fontSize: 14, fontWeight: 'bold' },
+  card: { backgroundColor: '#1A1A1A', padding: 24, borderRadius: 20, borderLeftWidth: 4, borderLeftColor: '#0052CC', marginBottom: 20 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 15 },
+  cardTitle: { color: '#FFF', fontSize: 20, fontWeight: 'bold', flex: 1 },
   label: { color: '#666', fontSize: 10, fontWeight: '900', letterSpacing: 1.2, marginBottom: 4 },
-  bodyText: { color: '#888', fontSize: 15, fontStyle: 'italic' },
+  bodyText: { color: '#DDD', fontSize: 15, lineHeight: 22, marginBottom: 15 },
+  wedgeText: { color: '#0052CC', fontSize: 16, fontWeight: '600', fontStyle: 'italic' },
+  divider: { height: 1, backgroundColor: '#333', marginVertical: 15 },
   emptyText: { color: '#888', textAlign: 'center', marginTop: 40, fontSize: 16 },
 });

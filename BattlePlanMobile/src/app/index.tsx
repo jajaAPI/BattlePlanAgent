@@ -1,5 +1,5 @@
 /**
- * App.tsx - v1.6 (1-Week Gemini AI Synthesis Engine)
+ * App.tsx - v1.7 (Gemini 2.5 AI Synthesis Engine)
  * Author: Jaja (Fallen Crown BV)
  * Purpose: Fetches live Calendar data (7-day horizon) and uses Gemini to synthesize tactical Battle Plans.
  */
@@ -67,7 +67,9 @@ export default function App() {
 
       // STAGE 2: Synthesize with Gemini
       setStatusText('Synthesizing Tactical Wedges...');
-      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      
+      // 🚨 CRITICAL FIX: Upgraded to the active 2.5 model. 1.5 is deprecated and returns 404.
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       
       // Strict prompt engineering to force Gemini into our preferred JSON output structure
       const prompt = `

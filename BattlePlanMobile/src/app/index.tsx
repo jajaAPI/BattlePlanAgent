@@ -1,7 +1,7 @@
 /**
- * App.tsx - v1.11 (Omni-Radar Timeline)
+ * App.tsx - v1.12 (Omni-Radar with 503 Graceful Degradation)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Fetches live Calendar data from ALL active user calendars (7-day horizon) and synthesizes tactical Battle Plans.
+ * Purpose: Fetches live Calendar data across all layers, synthesizes it, and handles API capacity spikes gracefully.
  */
 
 import React, { useState, useEffect } from 'react';
@@ -18,6 +18,8 @@ export default function App() {
   const [battlePlan, setBattlePlan] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusText, setStatusText] = useState(''); 
+  // 🚨 NEW STATE: Track if the pipeline failed so we can render a fallback UI
+  const [hasError, setHasError] = useState(false); 
 
   useEffect(() => {
     if (token) {
@@ -27,6 +29,7 @@ export default function App() {
 
   const executeBattlePlanPipeline = async (accessToken: string) => {
     setLoading(true);
+    setHasError(false); // Reset error state on a fresh attempt
     
     try {
       setStatusText('Mapping Calendar Layers...');
@@ -51,10 +54,8 @@ export default function App() {
       let allEvents: any[] = [];
 
       // STEP 2: Fire parallel requests to every active calendar to scrape their events
-      // We use Promise.all to execute these simultaneously for speed
       await Promise.all(activeCalendars.map(async (calendar: any) => {
         try {
-          // encodeURIComponent is critical here because calendar IDs are often email addresses with special characters
           const eventsResponse = await fetch(
             `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?timeMin=${startOfToday.toISOString()}&timeMax=${horizonDate.toISOString()}&singleEvents=true&orderBy=startTime`,
             { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -69,7 +70,7 @@ export default function App() {
         }
       }));
 
-      // STEP 3: Sort the flattened array chronologically so the AI reads it in chronological order
+      // STEP 3: Sort the flattened array chronologically
       allEvents.sort((a, b) => {
         const dateA = new Date(a.start?.dateTime || a.start?.date).getTime();
         const dateB = new Date(b.start?.dateTime || b.start?.date).getTime();
@@ -116,7 +117,9 @@ export default function App() {
 
     } catch (error) {
       console.error("Pipeline Failed:", error);
-      setStatusText('CRITICAL ERROR: Pipeline Failure');
+      // 🚨 FLIP THE ERROR STATE ON FAILURE 🚨
+      setHasError(true);
+      setStatusText('CRITICAL ERROR: AI capacity overload or invalid parse.');
     } finally {
       setLoading(false);
     }
@@ -147,10 +150,20 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
+        {/* Conditional Rendering: Loading -> Error -> Empty -> Success */}
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#0052CC" />
             <Text style={styles.loadingText}>{statusText}</Text>
+          </View>
+        ) : hasError ? (
+          // 🚨 FALLBACK UI: Render a Retry button when a 503 is hit
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorHeader}>SERVER OVERLOAD</Text>
+            <Text style={styles.errorBody}>Google's AI model is currently at maximum capacity. This is a temporary spike.</Text>
+            <TouchableOpacity style={styles.retryButton} onPress={() => token && executeBattlePlanPipeline(token)}>
+              <Text style={styles.retryText}>Re-Engage Pipeline</Text>
+            </TouchableOpacity>
           </View>
         ) : battlePlan.length === 0 ? (
           <Text style={styles.emptyText}>No events found across any calendars for the next 7 days.</Text>
@@ -189,6 +202,14 @@ const styles = StyleSheet.create({
   authSubtext: { color: '#888', fontSize: 14, marginBottom: 20 },
   loadingContainer: { marginTop: 50, alignItems: 'center' },
   loadingText: { color: '#0052CC', marginTop: 15, fontSize: 14, fontWeight: 'bold' },
+  
+  // 🚨 New Error UI Styles
+  errorContainer: { backgroundColor: '#330000', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#FF3333', marginTop: 20, alignItems: 'center' },
+  errorHeader: { color: '#FF3333', fontSize: 18, fontWeight: '900', letterSpacing: 1.5, marginBottom: 10 },
+  errorBody: { color: '#FF9999', fontSize: 14, textAlign: 'center', marginBottom: 20, lineHeight: 20 },
+  retryButton: { backgroundColor: '#FF3333', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 8 },
+  retryText: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
+
   card: { backgroundColor: '#1A1A1A', padding: 24, borderRadius: 20, borderLeftWidth: 4, borderLeftColor: '#0052CC', marginBottom: 20 },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 15 },
   cardTitle: { color: '#FFF', fontSize: 20, fontWeight: 'bold', flex: 1 },

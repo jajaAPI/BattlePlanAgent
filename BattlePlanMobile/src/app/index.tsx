@@ -1,21 +1,19 @@
 /**
- * App.tsx - v1.16 (Self-Correcting Feedback Loop)
+ * App.tsx - v1.18 (Seamless Editorial Header & Dynamic Loading)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Clusters events, applies distinct tactical lenses, and utilizes local storage to feed user rejections back into the AI to improve future outputs.
+ * Purpose: Overhauls the top overview into a unified editorial header and implements a rotating, engaging loading state.
  */
 
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, SafeAreaView, StatusBar, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-// Import AsyncStorage to permanently save Jaja's feedback on the device
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import GoogleLogin from './GoogleLogin';
 
-// Initialize the Gemini AI client using the secure environment variable
+// Initialize the Gemini AI client
 const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
 
-// Define the bifurcated JSON structure from the AI
 interface Engagement {
   id?: string;
   title: string;
@@ -35,15 +33,17 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [battlePlan, setBattlePlan] = useState<BattlePlanState | null>(null);
   const [loading, setLoading] = useState(false);
-  const [statusText, setStatusText] = useState(''); 
-  const [hasError, setHasError] = useState(false); 
   
-  // State to hold the permanent ledger of rejected advice
+  // Technical status of the pipeline (e.g., "Mapping Layers...")
+  const [statusText, setStatusText] = useState(''); 
+  // Dynamic tactical thought to keep the user engaged while waiting
+  const [loadingTip, setLoadingTip] = useState('');
+  
+  const [hasError, setHasError] = useState(false); 
   const [feedbackLedger, setFeedbackLedger] = useState<string[]>([]);
-  // State to track which UI cards have been voted on to give visual feedback
   const [votedCards, setVotedCards] = useState<{[key: string]: 'up' | 'down'}>({});
 
-  // On initial load, pull the historical feedback ledger from device storage
+  // Hydrate feedback ledger
   useEffect(() => {
     const loadFeedback = async () => {
       try {
@@ -58,30 +58,44 @@ export default function App() {
     loadFeedback();
   }, []);
 
-  // Kick off the pipeline when token is received
+  // 🚨 NEW LOGIC: Dynamic Loading Engine
+  // Rotates through a list of thoughts every 2.5 seconds while the app is in a loading state
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (loading) {
+      const tips = [
+        "Calibrating strategic objectives...",
+        "Reviewing past feedback ledgers...",
+        "Cross-referencing leisure with presence standards...",
+        "Identifying tactical wedges for upcoming meetings...",
+        "Synthesizing your weekly posture..."
+      ];
+      let i = 0;
+      setLoadingTip(tips[0]);
+      interval = setInterval(() => {
+        i = (i + 1) % tips.length;
+        setLoadingTip(tips[i]);
+      }, 2500);
+    }
+    // Cleanup the interval when loading finishes to prevent memory leaks
+    return () => clearInterval(interval);
+  }, [loading]);
+
+  // Execute pipeline on auth
   useEffect(() => {
     if (token) {
       executeBattlePlanPipeline(token);
     }
   }, [token]);
 
-  // Function to handle the thumbs down action and save it to storage
   const handleDownvote = async (title: string, wedge: string, index: number) => {
-    // Visually mark the card as downvoted
     setVotedCards(prev => ({ ...prev, [`${title}-${index}`]: 'down' }));
-    
-    // Create a strict rule based on what Jaja rejected
-    const newRule = `For the event type '${title}', you previously suggested: "${wedge}". The user REJECTED this. Do not give advice like this again. Shift your approach.`;
-    
-    // Add it to the ledger (keeping only the last 10 to save AI token costs)
+    const newRule = `For the event '${title}', you suggested: "${wedge}". The user REJECTED this. Shift your approach to be more grounded and specific next time.`;
     const updatedLedger = [...feedbackLedger, newRule].slice(-10);
     setFeedbackLedger(updatedLedger);
-    
-    // Save permanently to the phone
     await AsyncStorage.setItem('@jaja_feedback_ledger', JSON.stringify(updatedLedger));
   };
 
-  // Function to handle thumbs up (currently just visual, reinforces current behavior)
   const handleUpvote = (title: string, index: number) => {
     setVotedCards(prev => ({ ...prev, [`${title}-${index}`]: 'up' }));
   };
@@ -89,11 +103,10 @@ export default function App() {
   const executeBattlePlanPipeline = async (accessToken: string) => {
     setLoading(true);
     setHasError(false); 
-    // Reset visual votes for the new batch
     setVotedCards({}); 
     
     try {
-      setStatusText('Mapping Calendar Layers...');
+      setStatusText('Syncing Calendar Topology...');
       
       const startOfToday = new Date();
       startOfToday.setHours(0, 0, 0, 0);
@@ -108,7 +121,7 @@ export default function App() {
 
       const activeCalendars = (calendarListData.items || []).filter((c: any) => c.selected);
 
-      setStatusText(`Intercepting ${activeCalendars.length} Data Streams...`);
+      setStatusText(`Pulling ${activeCalendars.length} Data Layers...`);
       let rawEvents: any[] = [];
 
       await Promise.all(activeCalendars.map(async (calendar: any) => {
@@ -118,7 +131,6 @@ export default function App() {
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
           const eventsData = await eventsResponse.json();
-          
           if (eventsData.items) {
             rawEvents = rawEvents.concat(eventsData.items);
           }
@@ -146,7 +158,7 @@ export default function App() {
 
       if (deduplicatedEvents.length === 0) {
         setBattlePlan({ 
-          atAGlance: "No tactical engagements scheduled for the next 7 days.", 
+          atAGlance: "Your radar is clear. No active engagements detected.", 
           weeklyStats: [], 
           businessEngagements: [], 
           leisureEngagements: [] 
@@ -161,37 +173,36 @@ export default function App() {
         return `Event: ${m.summary} | Type: ${isAllDay} | ${locationStr} | Attendees: ${m.attendees?.length || 'Solo Block'} | Description: ${m.description?.substring(0, 100) || 'None'}`;
       }).join('\n');
 
-      setStatusText('Applying Feedback & Synthesizing...');
+      setStatusText('Drafting Executive Briefing...');
       
       const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       
-      // Inject the historical feedback into the AI's system prompt if it exists
       const feedbackContext = feedbackLedger.length > 0 
-        ? `\nCRITICAL USER FEEDBACK - DO NOT REPEAT THESE MISTAKES:\n${feedbackLedger.join('\n')}\n` 
+        ? `\nCRITICAL FEEDBACK - AVOID THESE MISTAKES:\n${feedbackLedger.join('\n')}\n` 
         : '';
 
       const prompt = `
-        You are a brutally honest, highly strategic advisor for Jaja at Fallen Crown BV. 
-        Analyze the following deduplicated schedule. Group minor/routine events together to aggressively shorten the list. Output strictly as a single JSON object.
+        You are a highly competent, loyal, and grounded human Chief of Staff to Jaja at Fallen Crown BV. 
+        Analyze the deduplicated schedule. Group minor/routine events to aggressively shorten the list. 
         ${feedbackContext}
         Rules for the JSON object structure:
-        1. "atAGlance": One sharp paragraph summarizing the week's friction points.
-        2. "weeklyStats": Array of 3 key metrics (e.g., {"label": "Deep Work Hours", "count": 12}).
-        3. "businessEngagements": Array of clustered business/productivity events.
-           - "title": Name of the grouped or single event.
+        1. "atAGlance": A warm, fiercely concise, and highly grounded 2-sentence human briefing. Talk directly to Jaja like a real person. Zero AI filler, zero corporate buzzwords. Just the reality of his week.
+        2. "weeklyStats": Array of 3 key metrics (e.g., {"label": "Client Pushes", "count": 4}).
+        3. "businessEngagements": Array of clustered business events.
+           - "title": Clean event name.
            - "objective": Brutal business goal.
-           - "prep": Actionable intelligence (e.g., specific metrics to review, exact documents to prep).
+           - "prep": Actionable intelligence (metrics to review, documents to prep).
            - "wedge": A sharp question to control the room.
-        4. "leisureEngagements": Array of clustered personal, fitness, and family events.
-           - "title": Name of the event.
-           - "objective": Goal focused on presence, disengagement from work, or relationship building.
-           - "prep": Active research. Suggest specific highly-rated Amsterdam cafes if location is missing, or specific gift ideas.
+        4. "leisureEngagements": Array of clustered personal/family events.
+           - "title": Event name.
+           - "objective": Goal focused on presence, health, or family.
+           - "prep": Active research (e.g., highly-rated cafes if location missing, specific gift ideas).
            - "wedge": A mental standard to stay present.
         
         Raw Schedule:
         ${promptData}
         
-        Output strictly as JSON. Do not include markdown blocks like \`\`\`json.
+        Output strictly as JSON. No markdown formatting.
       `;
 
       const aiResponse = await model.generateContent(prompt);
@@ -205,7 +216,7 @@ export default function App() {
     } catch (error) {
       console.error("Pipeline Failed:", error);
       setHasError(true);
-      setStatusText('CRITICAL ERROR: AI capacity overload or invalid parse.');
+      setStatusText('CRITICAL ERROR: AI capacity overload.');
     } finally {
       setLoading(false);
     }
@@ -217,50 +228,54 @@ export default function App() {
         <StatusBar barStyle="dark-content" />
         <View style={styles.authBox}>
           <Text style={styles.authHeader}>Fallen Crown</Text>
-          <Text style={styles.authSubtext}>Authenticate to sync radar</Text>
+          <Text style={styles.authSubtext}>Authenticate to sync radar.</Text>
           <GoogleLogin onLoginSuccess={(accessToken) => setToken(accessToken)} />
         </View>
       </SafeAreaView>
     );
   }
 
-  // Updated render function to include Dia-styled feedback buttons
   const renderEventCard = (item: Engagement, index: number, isBusiness: boolean) => {
     const cardKey = `${item.title}-${index}`;
     const voteStatus = votedCards[cardKey];
 
     return (
       <View key={item.id || index.toString()} style={styles.eventCard}>
-        <Text style={styles.cardTitle}>{item.title}</Text>
+        <View style={styles.cardHeaderFlex}>
+          <Text style={styles.cardTitle}>{item.title}</Text>
+        </View>
         
-        <Text style={styles.label}>OBJECTIVE</Text>
-        <Text style={styles.bodyText}>{item.objective}</Text>
+        <View style={styles.dataGroup}>
+          <Text style={styles.label}>OBJECTIVE</Text>
+          <Text style={styles.bodyText}>{item.objective}</Text>
+        </View>
 
-        <Text style={styles.label}>{isBusiness ? "TACTICAL PREP" : "RESEARCH & LOGISTICS"}</Text>
-        <Text style={styles.prepText}>{item.prep}</Text>
+        <View style={styles.dataGroup}>
+          <Text style={styles.label}>{isBusiness ? "TACTICAL PREP" : "RESEARCH & LOGISTICS"}</Text>
+          <Text style={styles.prepText}>{item.prep}</Text>
+        </View>
 
-        <View style={styles.divider} />
+        <View style={styles.dataGroup}>
+          <Text style={styles.label}>{isBusiness ? "THE WEDGE" : "PRESENCE STANDARD"}</Text>
+          <Text style={styles.wedgeText}>{item.wedge}</Text>
+        </View>
 
-        <Text style={styles.label}>{isBusiness ? "THE WEDGE" : "PRESENCE STANDARD"}</Text>
-        <Text style={styles.wedgeText}>{item.wedge}</Text>
-
-        {/* The Feedback Loop UI */}
         <View style={styles.feedbackContainer}>
-          <Text style={styles.feedbackLabel}>Calibrate Output</Text>
+          <Text style={styles.feedbackLabel}>Calibrate</Text>
           <View style={styles.feedbackButtons}>
             <TouchableOpacity 
               style={[styles.voteButton, voteStatus === 'up' && styles.voteButtonActive]} 
               onPress={() => handleUpvote(item.title, index)}
               disabled={!!voteStatus}
             >
-              <Text style={styles.voteEmoji}>👍</Text>
+              <Text style={[styles.voteEmoji, voteStatus === 'up' && styles.voteEmojiActive]}>👍</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              style={[styles.voteButton, voteStatus === 'down' && styles.voteButtonActiveDown]} 
+              style={[styles.voteButton, voteStatus === 'down' && styles.voteButtonActive]} 
               onPress={() => handleDownvote(item.title, item.wedge, index)}
               disabled={!!voteStatus}
             >
-              <Text style={styles.voteEmoji}>👎</Text>
+              <Text style={[styles.voteEmoji, voteStatus === 'down' && styles.voteEmojiActive]}>👎</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -274,16 +289,18 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         
         <View style={styles.headerRow}>
-          <Text style={styles.header}>Overview</Text>
+          <Text style={styles.header}>Radar</Text>
           <TouchableOpacity onPress={() => setToken(null)}>
-            <Text style={styles.logoutText}>Logout</Text>
+            <Text style={styles.logoutText}>Log Out</Text>
           </TouchableOpacity>
         </View>
 
+        {/* 🚨 UI UPDATE: Dynamic Loading Screen */}
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#000" />
-            <Text style={styles.loadingText}>{statusText}</Text>
+            <ActivityIndicator size="large" color="#111" />
+            <Text style={styles.loadingStatusText}>{statusText}</Text>
+            <Text style={styles.loadingTipText}>{loadingTip}</Text>
           </View>
         ) : hasError ? (
           <View style={styles.errorContainer}>
@@ -294,21 +311,19 @@ export default function App() {
             </TouchableOpacity>
           </View>
         ) : !battlePlan || (battlePlan.businessEngagements.length === 0 && battlePlan.leisureEngagements.length === 0) ? (
-          <Text style={styles.emptyText}>No events found across any calendars for the next 7 days.</Text>
+          <Text style={styles.emptyText}>Your week is entirely clear.</Text>
         ) : (
           <View>
-            <Text style={styles.sectionTitle}>At a glance</Text>
             
-            <View style={styles.executiveCard}>
-              <View style={styles.glanceSection}>
-                <Text style={styles.glanceText}>{battlePlan.atAGlance}</Text>
-              </View>
+            {/* 🚨 UI UPDATE: Unified Editorial Header (Replaces Bento Boxes) */}
+            <View style={styles.executiveHeader}>
+              <Text style={styles.executiveGreeting}>{battlePlan.atAGlance}</Text>
               
-              <View style={styles.tableSection}>
+              <View style={styles.metricsRow}>
                 {battlePlan.weeklyStats && battlePlan.weeklyStats.map((stat, i) => (
-                  <View key={i} style={styles.tableRow}>
-                    <Text style={styles.tableLabel}>{stat.label}</Text>
-                    <Text style={styles.tableValue}>{stat.count}</Text>
+                  <View key={i} style={styles.metricPill}>
+                    <Text style={styles.metricValue}>{stat.count}</Text>
+                    <Text style={styles.metricLabel}>{stat.label}</Text>
                   </View>
                 ))}
               </View>
@@ -316,14 +331,14 @@ export default function App() {
 
             {battlePlan.businessEngagements && battlePlan.businessEngagements.length > 0 && (
               <>
-                <Text style={styles.sectionTitle}>Business & Productivity</Text>
+                <Text style={styles.sectionTitleMain}>Business</Text>
                 {battlePlan.businessEngagements.map((item, index) => renderEventCard(item, index, true))}
               </>
             )}
 
             {battlePlan.leisureEngagements && battlePlan.leisureEngagements.length > 0 && (
               <>
-                <Text style={styles.sectionTitle}>Leisure & Personal</Text>
+                <Text style={styles.sectionTitleMain}>Leisure</Text>
                 {battlePlan.leisureEngagements.map((item, index) => renderEventCard(item, index, false))}
               </>
             )}
@@ -336,57 +351,59 @@ export default function App() {
   );
 }
 
-// Typography strictly set to system sans-serif mimicking Dia's aesthetic
 const systemFont = Platform.select({ ios: 'Helvetica Neue', android: 'Roboto', default: 'sans-serif' });
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9F9FB' },
-  scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 60 },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 },
-  header: { color: '#111827', fontSize: 28, fontWeight: '700', letterSpacing: -0.5, fontFamily: systemFont },
-  logoutText: { color: '#6B7280', fontSize: 14, fontWeight: '500', fontFamily: systemFont },
+  container: { flex: 1, backgroundColor: '#FAFAFA' },
+  scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 80 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 40 },
+  header: { color: '#111', fontSize: 32, fontWeight: '800', letterSpacing: -1, fontFamily: systemFont },
+  logoutText: { color: '#888', fontSize: 13, fontWeight: '600', fontFamily: systemFont, textTransform: 'uppercase', letterSpacing: 1 },
   
-  authContainer: { flex: 1, backgroundColor: '#F9F9FB', justifyContent: 'center', alignItems: 'center' },
+  authContainer: { flex: 1, backgroundColor: '#FAFAFA', justifyContent: 'center', alignItems: 'center' },
   authBox: { width: '85%', alignItems: 'flex-start', padding: 0 },
-  authHeader: { color: '#111827', fontSize: 32, fontWeight: '700', marginBottom: 8, letterSpacing: -0.5, fontFamily: systemFont },
-  authSubtext: { color: '#6B7280', fontSize: 16, marginBottom: 32, fontFamily: systemFont },
+  authHeader: { color: '#111', fontSize: 36, fontWeight: '800', marginBottom: 8, letterSpacing: -1, fontFamily: systemFont },
+  authSubtext: { color: '#666', fontSize: 16, marginBottom: 32, fontFamily: systemFont },
   
-  loadingContainer: { marginTop: 60, alignItems: 'center' },
-  loadingText: { color: '#111827', marginTop: 16, fontSize: 14, fontWeight: '500', fontFamily: systemFont },
+  // Loading UI Styles
+  loadingContainer: { marginTop: 80, alignItems: 'center', paddingHorizontal: 20 },
+  loadingStatusText: { color: '#111', marginTop: 24, fontSize: 16, fontWeight: '700', fontFamily: systemFont, textAlign: 'center' },
+  loadingTipText: { color: '#888', marginTop: 12, fontSize: 14, fontStyle: 'italic', fontFamily: systemFont, textAlign: 'center', lineHeight: 22 },
   
-  errorContainer: { backgroundColor: '#FEF2F2', padding: 24, borderRadius: 12, borderWidth: 1, borderColor: '#FEE2E2', marginTop: 20 },
-  errorHeader: { color: '#DC2626', fontSize: 16, fontWeight: '600', marginBottom: 8, fontFamily: systemFont },
-  errorBody: { color: '#EF4444', fontSize: 14, marginBottom: 20, lineHeight: 20, fontFamily: systemFont },
-  retryButton: { backgroundColor: '#111827', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 8, alignSelf: 'flex-start' },
-  retryText: { color: '#FFFFFF', fontWeight: '600', fontSize: 14, fontFamily: systemFont },
+  errorContainer: { backgroundColor: '#FFF', padding: 24, borderRadius: 12, borderWidth: 1, borderColor: '#EEE', marginTop: 20 },
+  errorHeader: { color: '#111', fontSize: 16, fontWeight: '700', marginBottom: 8, fontFamily: systemFont },
+  errorBody: { color: '#666', fontSize: 14, marginBottom: 20, lineHeight: 20, fontFamily: systemFont },
+  retryButton: { backgroundColor: '#111', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 6, alignSelf: 'flex-start' },
+  retryText: { color: '#FFF', fontWeight: '600', fontSize: 13, fontFamily: systemFont },
 
-  sectionTitle: { color: '#111827', fontSize: 18, fontWeight: '600', marginBottom: 16, marginTop: 16, letterSpacing: -0.3, fontFamily: systemFont },
+  sectionTitleMain: { color: '#111', fontSize: 22, fontWeight: '700', marginTop: 32, marginBottom: 20, letterSpacing: -0.5, fontFamily: systemFont },
   
-  executiveCard: { flexDirection: 'row', backgroundColor: '#FFFFFF', padding: 20, borderRadius: 16, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 32, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 4, elevation: 1 },
-  glanceSection: { flex: 1.5, paddingRight: 16, borderRightWidth: 1, borderRightColor: '#E5E7EB' },
-  glanceText: { color: '#374151', fontSize: 14, lineHeight: 22, fontFamily: systemFont },
-  tableSection: { flex: 1, paddingLeft: 16, justifyContent: 'center' },
-  tableRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-  tableLabel: { color: '#6B7280', fontSize: 12, fontWeight: '500', fontFamily: systemFont },
-  tableValue: { color: '#111827', fontSize: 12, fontWeight: '700', fontFamily: systemFont },
+  // 🚨 UI UPDATE: Unified Executive Header Styles
+  executiveHeader: { marginBottom: 40, paddingBottom: 32, borderBottomWidth: 1, borderBottomColor: '#EAEAEA' },
+  executiveGreeting: { color: '#111', fontSize: 22, lineHeight: 32, fontWeight: '400', marginBottom: 24, fontFamily: systemFont },
+  metricsRow: { flexDirection: 'row', gap: 12, flexWrap: 'wrap' },
+  metricPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0F0F0', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, gap: 8 },
+  metricValue: { color: '#111', fontSize: 14, fontWeight: '800', fontFamily: systemFont },
+  metricLabel: { color: '#666', fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, fontFamily: systemFont },
 
-  eventCard: { backgroundColor: '#FFFFFF', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 4, elevation: 1 },
-  cardTitle: { color: '#111827', fontSize: 18, fontWeight: '600', marginBottom: 20, letterSpacing: -0.3, fontFamily: systemFont },
+  eventCard: { backgroundColor: '#FFF', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#EAEAEA', marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 8, elevation: 1 },
+  cardHeaderFlex: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 },
+  cardTitle: { color: '#111', fontSize: 19, fontWeight: '700', letterSpacing: -0.4, flex: 1, fontFamily: systemFont },
   
-  label: { color: '#9CA3AF', fontSize: 10, fontWeight: '700', letterSpacing: 1.2, marginBottom: 6, textTransform: 'uppercase', fontFamily: systemFont },
-  bodyText: { color: '#374151', fontSize: 15, lineHeight: 22, marginBottom: 16, fontFamily: systemFont },
-  prepText: { color: '#8C6239', fontSize: 15, lineHeight: 22, fontWeight: '500', marginBottom: 16, fontFamily: systemFont },
-  wedgeText: { color: '#111827', fontSize: 15, fontWeight: '600', fontStyle: 'italic', lineHeight: 22, fontFamily: systemFont },
+  dataGroup: { marginBottom: 20 },
+  label: { color: '#A0A0A0', fontSize: 10, fontWeight: '800', letterSpacing: 1.2, marginBottom: 8, textTransform: 'uppercase', fontFamily: systemFont },
+  bodyText: { color: '#333', fontSize: 15, lineHeight: 22, fontFamily: systemFont },
+  prepText: { color: '#8C6239', fontSize: 15, lineHeight: 22, fontWeight: '600', fontFamily: systemFont },
+  wedgeText: { color: '#111', fontSize: 15, fontWeight: '600', fontStyle: 'italic', lineHeight: 22, fontFamily: systemFont },
   
-  divider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 16 },
-  emptyText: { color: '#6B7280', textAlign: 'center', marginTop: 40, fontSize: 16, fontFamily: systemFont },
+  divider: { height: 1, backgroundColor: '#F0F0F0', marginVertical: 20 },
+  emptyText: { color: '#888', textAlign: 'center', marginTop: 40, fontSize: 15, fontFamily: systemFont },
 
-  // New Feedback UI Styles
-  feedbackContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 24, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
-  feedbackLabel: { color: '#9CA3AF', fontSize: 12, fontWeight: '500', fontFamily: systemFont },
+  feedbackContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#F0F0F0' },
+  feedbackLabel: { color: '#888', fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1, fontFamily: systemFont },
   feedbackButtons: { flexDirection: 'row', gap: 8 },
-  voteButton: { paddingVertical: 6, paddingHorizontal: 12, backgroundColor: '#F9F9FB', borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB' },
-  voteButtonActive: { backgroundColor: '#ECFDF5', borderColor: '#10B981' },
-  voteButtonActiveDown: { backgroundColor: '#FEF2F2', borderColor: '#EF4444' },
-  voteEmoji: { fontSize: 14 },
+  voteButton: { paddingVertical: 8, paddingHorizontal: 16, backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#EAEAEA' },
+  voteButtonActive: { backgroundColor: '#EAEAEA', borderColor: '#CCC' },
+  voteEmoji: { fontSize: 14, opacity: 0.6 },
+  voteEmojiActive: { opacity: 1 },
 });

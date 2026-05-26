@@ -1,7 +1,7 @@
 /**
- * App.tsx - v1.12 (Omni-Radar with 503 Graceful Degradation)
+ * App.tsx - v1.13 (Dia Aesthetic, Deduplication, & Prep Insights)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Fetches live Calendar data across all layers, synthesizes it, and handles API capacity spikes gracefully.
+ * Purpose: Fetches live Calendar data across all layers, deduplicates overlapping events, synthesizes prep insights, and renders in a clean light theme.
  */
 
 import React, { useState, useEffect } from 'react';
@@ -13,12 +13,17 @@ import GoogleLogin from './GoogleLogin';
 // Initialize the Gemini AI client using the secure environment variable
 const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
 
+// Define the expected structure from the AI to ensure type safety in the UI
+interface BattlePlanState {
+  atAGlance: string;
+  events: any[];
+}
+
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
-  const [battlePlan, setBattlePlan] = useState<any[]>([]);
+  const [battlePlan, setBattlePlan] = useState<BattlePlanState | null>(null);
   const [loading, setLoading] = useState(false);
   const [statusText, setStatusText] = useState(''); 
-  // 🚨 NEW STATE: Track if the pipeline failed so we can render a fallback UI
   const [hasError, setHasError] = useState(false); 
 
   useEffect(() => {
@@ -29,7 +34,7 @@ export default function App() {
 
   const executeBattlePlanPipeline = async (accessToken: string) => {
     setLoading(true);
-    setHasError(false); // Reset error state on a fresh attempt
+    setHasError(false); 
     
     try {
       setStatusText('Mapping Calendar Layers...');
@@ -51,7 +56,7 @@ export default function App() {
       const activeCalendars = (calendarListData.items || []).filter((c: any) => c.selected);
 
       setStatusText(`Intercepting ${activeCalendars.length} Data Streams...`);
-      let allEvents: any[] = [];
+      let rawEvents: any[] = [];
 
       // STEP 2: Fire parallel requests to every active calendar to scrape their events
       await Promise.all(activeCalendars.map(async (calendar: any) => {
@@ -63,48 +68,68 @@ export default function App() {
           const eventsData = await eventsResponse.json();
           
           if (eventsData.items) {
-            allEvents = allEvents.concat(eventsData.items);
+            rawEvents = rawEvents.concat(eventsData.items);
           }
         } catch (err) {
           console.warn(`Failed to pull data from calendar layer: ${calendar.id}`, err);
         }
       }));
 
-      // STEP 3: Sort the flattened array chronologically
-      allEvents.sort((a, b) => {
+      // STEP 3: Deduplicate identical events that exist across multiple calendar layers
+      // We use a Map with a composite key of the event summary and its exact start time
+      const uniqueEventsMap = new Map();
+      rawEvents.forEach((event) => {
+        const timeKey = event.start?.dateTime || event.start?.date;
+        const compositeKey = `${event.summary}-${timeKey}`;
+        if (!uniqueEventsMap.has(compositeKey)) {
+          uniqueEventsMap.set(compositeKey, event);
+        }
+      });
+      
+      // Convert the Map back to an array of unique events
+      let deduplicatedEvents = Array.from(uniqueEventsMap.values());
+
+      // STEP 4: Sort the flattened, deduplicated array chronologically
+      deduplicatedEvents.sort((a, b) => {
         const dateA = new Date(a.start?.dateTime || a.start?.date).getTime();
         const dateB = new Date(b.start?.dateTime || b.start?.date).getTime();
         return dateA - dateB;
       });
 
-      if (allEvents.length === 0) {
-        setBattlePlan([]);
+      if (deduplicatedEvents.length === 0) {
+        setBattlePlan({ atAGlance: "No tactical engagements scheduled for the next 7 days.", events: [] });
         setLoading(false);
         return;
       }
 
-      // Format data to explicitly tell Gemini what type of event it is handling
-      const promptData = allEvents.map((m: any) => {
+      // Format data to explicitly highlight missing locations or specifics for the AI to flag
+      const promptData = deduplicatedEvents.map((m: any) => {
         const isAllDay = m.start?.date ? "ALL-DAY TASK" : "TIMED EVENT";
-        return `Event: ${m.summary} | Type: ${isAllDay} | Attendees: ${m.attendees?.length || 'Solo Block'} | Description: ${m.description?.substring(0, 100) || 'None'}`;
+        const locationStr = m.location ? `Location: ${m.location}` : "Location: MISSING";
+        return `Event: ${m.summary} | Type: ${isAllDay} | ${locationStr} | Attendees: ${m.attendees?.length || 'Solo Block'} | Description: ${m.description?.substring(0, 100) || 'None'}`;
       }).join('\n');
 
-      setStatusText('Synthesizing Tactical Wedges...');
+      setStatusText('Synthesizing Tactical Wedges & Prep...');
       
       const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       
+      // Strict prompt engineering requiring a master object with atAGlance summary and preparation insights
       const prompt = `
         You are a brutally honest, highly strategic Solution Engineer advisor for Jaja at Fallen Crown BV. 
-        Analyze the following schedule. For each event, generate a tactical 'Battle Plan' object.
+        Analyze the following deduplicated schedule. Output strictly as a single JSON object.
         
-        Rules:
-        1. 'objective': One brutal, objective sentence on the actual goal of this event.
-        2. 'wedge': If it's a meeting, provide a sharp question to control the room. If it's a solo block/all-day task, provide a ruthless standard to hold Jaja accountable.
+        Rules for the JSON object structure:
+        1. "atAGlance": One sharp, executive-level paragraph summarizing the weekly posture and major friction points.
+        2. "events": An array of objects for each event containing:
+           - "title": (string) Event name.
+           - "objective": One brutal, objective sentence on the actual goal of this event.
+           - "prep": Actionable preparation intelligence. Flag missing locations, mandate 4-day lead times for gifts (if a birthday), or dictate specific talking points for calls/meetings. 
+           - "wedge": If it's a meeting, a sharp question to control the room. If it's a solo block, a ruthless standard to hold Jaja accountable.
         
         Raw Schedule:
         ${promptData}
         
-        Output strictly as a JSON array of objects with keys: "id" (string), "title" (string), "objective" (string), "wedge" (string). Do not include markdown blocks like \`\`\`json.
+        Output strictly as JSON. Do not include markdown blocks like \`\`\`json.
       `;
 
       const aiResponse = await model.generateContent(prompt);
@@ -117,7 +142,6 @@ export default function App() {
 
     } catch (error) {
       console.error("Pipeline Failed:", error);
-      // 🚨 FLIP THE ERROR STATE ON FAILURE 🚨
       setHasError(true);
       setStatusText('CRITICAL ERROR: AI capacity overload or invalid parse.');
     } finally {
@@ -128,10 +152,10 @@ export default function App() {
   if (!token) {
     return (
       <SafeAreaView style={styles.authContainer}>
-        <StatusBar barStyle="light-content" />
+        <StatusBar barStyle="dark-content" />
         <View style={styles.authBox}>
-          <Text style={styles.authHeader}>Fallen Crown BV</Text>
-          <Text style={styles.authSubtext}>Secure Access Required</Text>
+          <Text style={styles.authHeader}>Fallen Crown</Text>
+          <Text style={styles.authSubtext}>Authenticate to sync radar</Text>
           <GoogleLogin onLoginSuccess={(accessToken) => setToken(accessToken)} />
         </View>
       </SafeAreaView>
@@ -140,49 +164,57 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle="dark-content" />
       <ScrollView contentContainerStyle={styles.scrollContent}>
         
         <View style={styles.headerRow}>
-          <Text style={styles.header}>🎯 Battle Plan</Text>
+          <Text style={styles.header}>Overview</Text>
           <TouchableOpacity onPress={() => setToken(null)}>
             <Text style={styles.logoutText}>Logout</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Conditional Rendering: Loading -> Error -> Empty -> Success */}
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#0052CC" />
+            <ActivityIndicator size="large" color="#000" />
             <Text style={styles.loadingText}>{statusText}</Text>
           </View>
         ) : hasError ? (
-          // 🚨 FALLBACK UI: Render a Retry button when a 503 is hit
           <View style={styles.errorContainer}>
-            <Text style={styles.errorHeader}>SERVER OVERLOAD</Text>
-            <Text style={styles.errorBody}>Google's AI model is currently at maximum capacity. This is a temporary spike.</Text>
+            <Text style={styles.errorHeader}>Radar Offline</Text>
+            <Text style={styles.errorBody}>API capacity exceeded. This is a temporary spike.</Text>
             <TouchableOpacity style={styles.retryButton} onPress={() => token && executeBattlePlanPipeline(token)}>
-              <Text style={styles.retryText}>Re-Engage Pipeline</Text>
+              <Text style={styles.retryText}>Retry</Text>
             </TouchableOpacity>
           </View>
-        ) : battlePlan.length === 0 ? (
+        ) : !battlePlan || battlePlan.events.length === 0 ? (
           <Text style={styles.emptyText}>No events found across any calendars for the next 7 days.</Text>
         ) : (
-          battlePlan.map((item, index) => (
-            <View key={item.id || index.toString()} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle}>{item.title}</Text>
-              </View>
-              
-              <Text style={styles.label}>STRATEGIC OBJECTIVE</Text>
-              <Text style={styles.bodyText}>{item.objective}</Text>
-
-              <View style={styles.divider} />
-
-              <Text style={styles.label}>TACTICAL WEDGE</Text>
-              <Text style={styles.wedgeText}>{item.wedge}</Text>
+          <View>
+            {/* Dia-inspired At a Glance Section */}
+            <Text style={styles.sectionTitle}>At a glance</Text>
+            <View style={styles.glanceCard}>
+              <Text style={styles.glanceText}>{battlePlan.atAGlance}</Text>
             </View>
-          ))
+
+            <Text style={styles.sectionTitle}>Tactical Timeline</Text>
+            {battlePlan.events.map((item, index) => (
+              <View key={item.id || index.toString()} style={styles.eventCard}>
+                <Text style={styles.cardTitle}>{item.title}</Text>
+                
+                <Text style={styles.label}>OBJECTIVE</Text>
+                <Text style={styles.bodyText}>{item.objective}</Text>
+
+                <Text style={styles.label}>PREPARATION</Text>
+                <Text style={styles.prepText}>{item.prep}</Text>
+
+                <View style={styles.divider} />
+
+                <Text style={styles.label}>WEDGE</Text>
+                <Text style={styles.wedgeText}>{item.wedge}</Text>
+              </View>
+            ))}
+          </View>
         )}
 
       </ScrollView>
@@ -190,32 +222,41 @@ export default function App() {
   );
 }
 
+// Rewritten Dia-Aesthetic Light Theme Styles
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-  scrollContent: { padding: 20, paddingTop: 40 },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 30 },
-  header: { color: '#0052CC', fontSize: 34, fontWeight: '900' },
-  logoutText: { color: '#666', fontSize: 14, fontWeight: 'bold' },
-  authContainer: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
-  authBox: { width: '80%', alignItems: 'center', backgroundColor: '#111', padding: 30, borderRadius: 16, borderWidth: 1, borderColor: '#333' },
-  authHeader: { color: '#FFF', fontSize: 24, fontWeight: 'bold', marginBottom: 10 },
-  authSubtext: { color: '#888', fontSize: 14, marginBottom: 20 },
-  loadingContainer: { marginTop: 50, alignItems: 'center' },
-  loadingText: { color: '#0052CC', marginTop: 15, fontSize: 14, fontWeight: 'bold' },
+  container: { flex: 1, backgroundColor: '#FAFAFA' },
+  scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 60 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 },
+  header: { color: '#1A1A1A', fontSize: 28, fontWeight: '700', letterSpacing: -0.5 },
+  logoutText: { color: '#666', fontSize: 14, fontWeight: '500' },
   
-  // 🚨 New Error UI Styles
-  errorContainer: { backgroundColor: '#330000', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#FF3333', marginTop: 20, alignItems: 'center' },
-  errorHeader: { color: '#FF3333', fontSize: 18, fontWeight: '900', letterSpacing: 1.5, marginBottom: 10 },
-  errorBody: { color: '#FF9999', fontSize: 14, textAlign: 'center', marginBottom: 20, lineHeight: 20 },
-  retryButton: { backgroundColor: '#FF3333', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 8 },
-  retryText: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
+  authContainer: { flex: 1, backgroundColor: '#FAFAFA', justifyContent: 'center', alignItems: 'center' },
+  authBox: { width: '85%', alignItems: 'flex-start', padding: 0 },
+  authHeader: { color: '#1A1A1A', fontSize: 32, fontWeight: '700', marginBottom: 8, letterSpacing: -0.5 },
+  authSubtext: { color: '#666', fontSize: 16, marginBottom: 32 },
+  
+  loadingContainer: { marginTop: 60, alignItems: 'center' },
+  loadingText: { color: '#1A1A1A', marginTop: 16, fontSize: 14, fontWeight: '500' },
+  
+  errorContainer: { backgroundColor: '#FFF5F5', padding: 24, borderRadius: 12, borderWidth: 1, borderColor: '#FFEBEB', marginTop: 20 },
+  errorHeader: { color: '#D92D20', fontSize: 16, fontWeight: '600', marginBottom: 8 },
+  errorBody: { color: '#F04438', fontSize: 14, marginBottom: 20, lineHeight: 20 },
+  retryButton: { backgroundColor: '#1A1A1A', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 8, alignSelf: 'flex-start' },
+  retryText: { color: '#FFF', fontWeight: '600', fontSize: 14 },
 
-  card: { backgroundColor: '#1A1A1A', padding: 24, borderRadius: 20, borderLeftWidth: 4, borderLeftColor: '#0052CC', marginBottom: 20 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 15 },
-  cardTitle: { color: '#FFF', fontSize: 20, fontWeight: 'bold', flex: 1 },
-  label: { color: '#666', fontSize: 10, fontWeight: '900', letterSpacing: 1.2, marginBottom: 4 },
-  bodyText: { color: '#DDD', fontSize: 15, lineHeight: 22, marginBottom: 15 },
-  wedgeText: { color: '#0052CC', fontSize: 16, fontWeight: '600', fontStyle: 'italic' },
-  divider: { height: 1, backgroundColor: '#333', marginVertical: 15 },
-  emptyText: { color: '#888', textAlign: 'center', marginTop: 40, fontSize: 16 },
+  sectionTitle: { color: '#1A1A1A', fontSize: 18, fontWeight: '600', marginBottom: 16, marginTop: 16, letterSpacing: -0.3 },
+  
+  glanceCard: { backgroundColor: '#FFFFFF', padding: 20, borderRadius: 16, borderWidth: 1, borderColor: '#F0F0F0', marginBottom: 32, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 8, elevation: 1 },
+  glanceText: { color: '#333333', fontSize: 15, lineHeight: 24 },
+
+  eventCard: { backgroundColor: '#FFFFFF', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#F0F0F0', marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 8, elevation: 1 },
+  cardTitle: { color: '#1A1A1A', fontSize: 18, fontWeight: '600', marginBottom: 20, letterSpacing: -0.3 },
+  
+  label: { color: '#888888', fontSize: 10, fontWeight: '700', letterSpacing: 1.2, marginBottom: 6, textTransform: 'uppercase' },
+  bodyText: { color: '#333333', fontSize: 15, lineHeight: 22, marginBottom: 16 },
+  prepText: { color: '#D97706', fontSize: 15, lineHeight: 22, fontWeight: '500', marginBottom: 16 },
+  wedgeText: { color: '#1A1A1A', fontSize: 15, fontWeight: '600', fontStyle: 'italic', lineHeight: 22 },
+  
+  divider: { height: 1, backgroundColor: '#F5F5F5', marginVertical: 16 },
+  emptyText: { color: '#666', textAlign: 'center', marginTop: 40, fontSize: 16 },
 });

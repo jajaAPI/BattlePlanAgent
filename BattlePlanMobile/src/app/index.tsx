@@ -1,11 +1,11 @@
 /**
- * App.tsx - v1.13 (Dia Aesthetic, Deduplication, & Prep Insights)
+ * App.tsx - v1.14 (Executive Dash & Active AI Research)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Fetches live Calendar data across all layers, deduplicates overlapping events, synthesizes prep insights, and renders in a clean light theme.
+ * Purpose: Omni-radar timeline with side-by-side visual executive summaries and actionable AI research.
  */
 
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView, SafeAreaView, StatusBar, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, SafeAreaView, StatusBar, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 import GoogleLogin from './GoogleLogin';
@@ -13,9 +13,10 @@ import GoogleLogin from './GoogleLogin';
 // Initialize the Gemini AI client using the secure environment variable
 const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
 
-// Define the expected structure from the AI to ensure type safety in the UI
+// Define the expanded JSON structure from the AI to handle the new visual table
 interface BattlePlanState {
   atAGlance: string;
+  weeklyStats: { label: string; count: number }[];
   events: any[];
 }
 
@@ -52,7 +53,6 @@ export default function App() {
       );
       const calendarListData = await calendarListResponse.json();
 
-      // Filter to only include calendars the user currently has toggled "on" or visible
       const activeCalendars = (calendarListData.items || []).filter((c: any) => c.selected);
 
       setStatusText(`Intercepting ${activeCalendars.length} Data Streams...`);
@@ -76,7 +76,6 @@ export default function App() {
       }));
 
       // STEP 3: Deduplicate identical events that exist across multiple calendar layers
-      // We use a Map with a composite key of the event summary and its exact start time
       const uniqueEventsMap = new Map();
       rawEvents.forEach((event) => {
         const timeKey = event.start?.dateTime || event.start?.date;
@@ -86,7 +85,6 @@ export default function App() {
         }
       });
       
-      // Convert the Map back to an array of unique events
       let deduplicatedEvents = Array.from(uniqueEventsMap.values());
 
       // STEP 4: Sort the flattened, deduplicated array chronologically
@@ -97,33 +95,33 @@ export default function App() {
       });
 
       if (deduplicatedEvents.length === 0) {
-        setBattlePlan({ atAGlance: "No tactical engagements scheduled for the next 7 days.", events: [] });
+        setBattlePlan({ atAGlance: "No tactical engagements scheduled for the next 7 days.", weeklyStats: [], events: [] });
         setLoading(false);
         return;
       }
 
-      // Format data to explicitly highlight missing locations or specifics for the AI to flag
       const promptData = deduplicatedEvents.map((m: any) => {
         const isAllDay = m.start?.date ? "ALL-DAY TASK" : "TIMED EVENT";
         const locationStr = m.location ? `Location: ${m.location}` : "Location: MISSING";
         return `Event: ${m.summary} | Type: ${isAllDay} | ${locationStr} | Attendees: ${m.attendees?.length || 'Solo Block'} | Description: ${m.description?.substring(0, 100) || 'None'}`;
       }).join('\n');
 
-      setStatusText('Synthesizing Tactical Wedges & Prep...');
+      setStatusText('Conducting Active AI Research...');
       
       const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       
-      // Strict prompt engineering requiring a master object with atAGlance summary and preparation insights
+      // 🚨 CRITICAL UPDATE: The prompt now demands actual research and a statistical table output
       const prompt = `
         You are a brutally honest, highly strategic Solution Engineer advisor for Jaja at Fallen Crown BV. 
         Analyze the following deduplicated schedule. Output strictly as a single JSON object.
         
         Rules for the JSON object structure:
         1. "atAGlance": One sharp, executive-level paragraph summarizing the weekly posture and major friction points.
-        2. "events": An array of objects for each event containing:
+        2. "weeklyStats": An array of objects to populate a visual table. Generate 3-4 key metrics based on the schedule (e.g., {"label": "High-Stakes Meetings", "count": 4}, {"label": "Focus Blocks", "count": 2}).
+        3. "events": An array of objects for each event containing:
            - "title": (string) Event name.
            - "objective": One brutal, objective sentence on the actual goal of this event.
-           - "prep": Actionable preparation intelligence. Flag missing locations, mandate 4-day lead times for gifts (if a birthday), or dictate specific talking points for calls/meetings. 
+           - "prep": Actionable intelligence and actual research. DO NOT just say "find a gift". Actually suggest 3 specific gift ideas (leveraging themes like padel, music, or fashion). If a lunch in Amsterdam lacks a location, suggest 2 specific high-rated cafes. Do the research and summarize it.
            - "wedge": If it's a meeting, a sharp question to control the room. If it's a solo block, a ruthless standard to hold Jaja accountable.
         
         Raw Schedule:
@@ -191,10 +189,22 @@ export default function App() {
           <Text style={styles.emptyText}>No events found across any calendars for the next 7 days.</Text>
         ) : (
           <View>
-            {/* Dia-inspired At a Glance Section */}
             <Text style={styles.sectionTitle}>At a glance</Text>
-            <View style={styles.glanceCard}>
-              <Text style={styles.glanceText}>{battlePlan.atAGlance}</Text>
+            
+            {/* 🚨 NEW LAYOUT: Side-by-side Executive Summary and Visual Table */}
+            <View style={styles.executiveCard}>
+              <View style={styles.glanceSection}>
+                <Text style={styles.glanceText}>{battlePlan.atAGlance}</Text>
+              </View>
+              
+              <View style={styles.tableSection}>
+                {battlePlan.weeklyStats && battlePlan.weeklyStats.map((stat, i) => (
+                  <View key={i} style={styles.tableRow}>
+                    <Text style={styles.tableLabel}>{stat.label}</Text>
+                    <Text style={styles.tableValue}>{stat.count}</Text>
+                  </View>
+                ))}
+              </View>
             </View>
 
             <Text style={styles.sectionTitle}>Tactical Timeline</Text>
@@ -205,7 +215,7 @@ export default function App() {
                 <Text style={styles.label}>OBJECTIVE</Text>
                 <Text style={styles.bodyText}>{item.objective}</Text>
 
-                <Text style={styles.label}>PREPARATION</Text>
+                <Text style={styles.label}>PREPARATION & RESEARCH</Text>
                 <Text style={styles.prepText}>{item.prep}</Text>
 
                 <View style={styles.divider} />
@@ -222,41 +232,49 @@ export default function App() {
   );
 }
 
-// Rewritten Dia-Aesthetic Light Theme Styles
+// Typography strictly set to system sans-serif mimicking Dia's aesthetic
+const systemFont = Platform.select({ ios: 'Helvetica Neue', android: 'Roboto', default: 'sans-serif' });
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FAFAFA' },
+  container: { flex: 1, backgroundColor: '#F9F9FB' },
   scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 60 },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 },
-  header: { color: '#1A1A1A', fontSize: 28, fontWeight: '700', letterSpacing: -0.5 },
-  logoutText: { color: '#666', fontSize: 14, fontWeight: '500' },
+  header: { color: '#111827', fontSize: 28, fontWeight: '700', letterSpacing: -0.5, fontFamily: systemFont },
+  logoutText: { color: '#6B7280', fontSize: 14, fontWeight: '500', fontFamily: systemFont },
   
-  authContainer: { flex: 1, backgroundColor: '#FAFAFA', justifyContent: 'center', alignItems: 'center' },
+  authContainer: { flex: 1, backgroundColor: '#F9F9FB', justifyContent: 'center', alignItems: 'center' },
   authBox: { width: '85%', alignItems: 'flex-start', padding: 0 },
-  authHeader: { color: '#1A1A1A', fontSize: 32, fontWeight: '700', marginBottom: 8, letterSpacing: -0.5 },
-  authSubtext: { color: '#666', fontSize: 16, marginBottom: 32 },
+  authHeader: { color: '#111827', fontSize: 32, fontWeight: '700', marginBottom: 8, letterSpacing: -0.5, fontFamily: systemFont },
+  authSubtext: { color: '#6B7280', fontSize: 16, marginBottom: 32, fontFamily: systemFont },
   
   loadingContainer: { marginTop: 60, alignItems: 'center' },
-  loadingText: { color: '#1A1A1A', marginTop: 16, fontSize: 14, fontWeight: '500' },
+  loadingText: { color: '#111827', marginTop: 16, fontSize: 14, fontWeight: '500', fontFamily: systemFont },
   
-  errorContainer: { backgroundColor: '#FFF5F5', padding: 24, borderRadius: 12, borderWidth: 1, borderColor: '#FFEBEB', marginTop: 20 },
-  errorHeader: { color: '#D92D20', fontSize: 16, fontWeight: '600', marginBottom: 8 },
-  errorBody: { color: '#F04438', fontSize: 14, marginBottom: 20, lineHeight: 20 },
-  retryButton: { backgroundColor: '#1A1A1A', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 8, alignSelf: 'flex-start' },
-  retryText: { color: '#FFF', fontWeight: '600', fontSize: 14 },
+  errorContainer: { backgroundColor: '#FEF2F2', padding: 24, borderRadius: 12, borderWidth: 1, borderColor: '#FEE2E2', marginTop: 20 },
+  errorHeader: { color: '#DC2626', fontSize: 16, fontWeight: '600', marginBottom: 8, fontFamily: systemFont },
+  errorBody: { color: '#EF4444', fontSize: 14, marginBottom: 20, lineHeight: 20, fontFamily: systemFont },
+  retryButton: { backgroundColor: '#111827', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 8, alignSelf: 'flex-start' },
+  retryText: { color: '#FFFFFF', fontWeight: '600', fontSize: 14, fontFamily: systemFont },
 
-  sectionTitle: { color: '#1A1A1A', fontSize: 18, fontWeight: '600', marginBottom: 16, marginTop: 16, letterSpacing: -0.3 },
+  sectionTitle: { color: '#111827', fontSize: 18, fontWeight: '600', marginBottom: 16, marginTop: 16, letterSpacing: -0.3, fontFamily: systemFont },
   
-  glanceCard: { backgroundColor: '#FFFFFF', padding: 20, borderRadius: 16, borderWidth: 1, borderColor: '#F0F0F0', marginBottom: 32, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 8, elevation: 1 },
-  glanceText: { color: '#333333', fontSize: 15, lineHeight: 24 },
+  // Executive Dashboard Layout
+  executiveCard: { flexDirection: 'row', backgroundColor: '#FFFFFF', padding: 20, borderRadius: 16, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 32, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 4, elevation: 1 },
+  glanceSection: { flex: 1.5, paddingRight: 16, borderRightWidth: 1, borderRightColor: '#E5E7EB' },
+  glanceText: { color: '#374151', fontSize: 14, lineHeight: 22, fontFamily: systemFont },
+  tableSection: { flex: 1, paddingLeft: 16, justifyContent: 'center' },
+  tableRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  tableLabel: { color: '#6B7280', fontSize: 12, fontWeight: '500', fontFamily: systemFont },
+  tableValue: { color: '#111827', fontSize: 12, fontWeight: '700', fontFamily: systemFont },
 
-  eventCard: { backgroundColor: '#FFFFFF', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#F0F0F0', marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 8, elevation: 1 },
-  cardTitle: { color: '#1A1A1A', fontSize: 18, fontWeight: '600', marginBottom: 20, letterSpacing: -0.3 },
+  eventCard: { backgroundColor: '#FFFFFF', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 4, elevation: 1 },
+  cardTitle: { color: '#111827', fontSize: 18, fontWeight: '600', marginBottom: 20, letterSpacing: -0.3, fontFamily: systemFont },
   
-  label: { color: '#888888', fontSize: 10, fontWeight: '700', letterSpacing: 1.2, marginBottom: 6, textTransform: 'uppercase' },
-  bodyText: { color: '#333333', fontSize: 15, lineHeight: 22, marginBottom: 16 },
-  prepText: { color: '#D97706', fontSize: 15, lineHeight: 22, fontWeight: '500', marginBottom: 16 },
-  wedgeText: { color: '#1A1A1A', fontSize: 15, fontWeight: '600', fontStyle: 'italic', lineHeight: 22 },
+  label: { color: '#9CA3AF', fontSize: 10, fontWeight: '700', letterSpacing: 1.2, marginBottom: 6, textTransform: 'uppercase', fontFamily: systemFont },
+  bodyText: { color: '#374151', fontSize: 15, lineHeight: 22, marginBottom: 16, fontFamily: systemFont },
+  prepText: { color: '#D97706', fontSize: 15, lineHeight: 22, fontWeight: '500', marginBottom: 16, fontFamily: systemFont },
+  wedgeText: { color: '#111827', fontSize: 15, fontWeight: '600', fontStyle: 'italic', lineHeight: 22, fontFamily: systemFont },
   
-  divider: { height: 1, backgroundColor: '#F5F5F5', marginVertical: 16 },
-  emptyText: { color: '#666', textAlign: 'center', marginTop: 40, fontSize: 16 },
+  divider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 16 },
+  emptyText: { color: '#6B7280', textAlign: 'center', marginTop: 40, fontSize: 16, fontFamily: systemFont },
 });

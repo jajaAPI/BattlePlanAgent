@@ -1,23 +1,34 @@
 /**
- * App.tsx - v1.14 (Executive Dash & Active AI Research)
+ * App.tsx - v1.16 (Self-Correcting Feedback Loop)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Omni-radar timeline with side-by-side visual executive summaries and actionable AI research.
+ * Purpose: Clusters events, applies distinct tactical lenses, and utilizes local storage to feed user rejections back into the AI to improve future outputs.
  */
 
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, SafeAreaView, StatusBar, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+// Import AsyncStorage to permanently save Jaja's feedback on the device
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import GoogleLogin from './GoogleLogin';
 
 // Initialize the Gemini AI client using the secure environment variable
 const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
 
-// Define the expanded JSON structure from the AI to handle the new visual table
+// Define the bifurcated JSON structure from the AI
+interface Engagement {
+  id?: string;
+  title: string;
+  objective: string;
+  prep: string;
+  wedge: string;
+}
+
 interface BattlePlanState {
   atAGlance: string;
   weeklyStats: { label: string; count: number }[];
-  events: any[];
+  businessEngagements: Engagement[];
+  leisureEngagements: Engagement[];
 }
 
 export default function App() {
@@ -26,27 +37,69 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [statusText, setStatusText] = useState(''); 
   const [hasError, setHasError] = useState(false); 
+  
+  // State to hold the permanent ledger of rejected advice
+  const [feedbackLedger, setFeedbackLedger] = useState<string[]>([]);
+  // State to track which UI cards have been voted on to give visual feedback
+  const [votedCards, setVotedCards] = useState<{[key: string]: 'up' | 'down'}>({});
 
+  // On initial load, pull the historical feedback ledger from device storage
+  useEffect(() => {
+    const loadFeedback = async () => {
+      try {
+        const savedFeedback = await AsyncStorage.getItem('@jaja_feedback_ledger');
+        if (savedFeedback) {
+          setFeedbackLedger(JSON.parse(savedFeedback));
+        }
+      } catch (e) {
+        console.error("Failed to load feedback ledger", e);
+      }
+    };
+    loadFeedback();
+  }, []);
+
+  // Kick off the pipeline when token is received
   useEffect(() => {
     if (token) {
       executeBattlePlanPipeline(token);
     }
   }, [token]);
 
+  // Function to handle the thumbs down action and save it to storage
+  const handleDownvote = async (title: string, wedge: string, index: number) => {
+    // Visually mark the card as downvoted
+    setVotedCards(prev => ({ ...prev, [`${title}-${index}`]: 'down' }));
+    
+    // Create a strict rule based on what Jaja rejected
+    const newRule = `For the event type '${title}', you previously suggested: "${wedge}". The user REJECTED this. Do not give advice like this again. Shift your approach.`;
+    
+    // Add it to the ledger (keeping only the last 10 to save AI token costs)
+    const updatedLedger = [...feedbackLedger, newRule].slice(-10);
+    setFeedbackLedger(updatedLedger);
+    
+    // Save permanently to the phone
+    await AsyncStorage.setItem('@jaja_feedback_ledger', JSON.stringify(updatedLedger));
+  };
+
+  // Function to handle thumbs up (currently just visual, reinforces current behavior)
+  const handleUpvote = (title: string, index: number) => {
+    setVotedCards(prev => ({ ...prev, [`${title}-${index}`]: 'up' }));
+  };
+
   const executeBattlePlanPipeline = async (accessToken: string) => {
     setLoading(true);
     setHasError(false); 
+    // Reset visual votes for the new batch
+    setVotedCards({}); 
     
     try {
       setStatusText('Mapping Calendar Layers...');
       
-      // Establish the temporal boundaries: Exactly 00:00:00 today to 7 days from now
       const startOfToday = new Date();
       startOfToday.setHours(0, 0, 0, 0);
       const horizonDate = new Date();
       horizonDate.setDate(startOfToday.getDate() + 7);
 
-      // STEP 1: Ask Google for every calendar this user has access to
       const calendarListResponse = await fetch(
         `https://www.googleapis.com/calendar/v3/users/me/calendarList`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -58,7 +111,6 @@ export default function App() {
       setStatusText(`Intercepting ${activeCalendars.length} Data Streams...`);
       let rawEvents: any[] = [];
 
-      // STEP 2: Fire parallel requests to every active calendar to scrape their events
       await Promise.all(activeCalendars.map(async (calendar: any) => {
         try {
           const eventsResponse = await fetch(
@@ -75,7 +127,6 @@ export default function App() {
         }
       }));
 
-      // STEP 3: Deduplicate identical events that exist across multiple calendar layers
       const uniqueEventsMap = new Map();
       rawEvents.forEach((event) => {
         const timeKey = event.start?.dateTime || event.start?.date;
@@ -87,7 +138,6 @@ export default function App() {
       
       let deduplicatedEvents = Array.from(uniqueEventsMap.values());
 
-      // STEP 4: Sort the flattened, deduplicated array chronologically
       deduplicatedEvents.sort((a, b) => {
         const dateA = new Date(a.start?.dateTime || a.start?.date).getTime();
         const dateB = new Date(b.start?.dateTime || b.start?.date).getTime();
@@ -95,7 +145,12 @@ export default function App() {
       });
 
       if (deduplicatedEvents.length === 0) {
-        setBattlePlan({ atAGlance: "No tactical engagements scheduled for the next 7 days.", weeklyStats: [], events: [] });
+        setBattlePlan({ 
+          atAGlance: "No tactical engagements scheduled for the next 7 days.", 
+          weeklyStats: [], 
+          businessEngagements: [], 
+          leisureEngagements: [] 
+        });
         setLoading(false);
         return;
       }
@@ -106,23 +161,32 @@ export default function App() {
         return `Event: ${m.summary} | Type: ${isAllDay} | ${locationStr} | Attendees: ${m.attendees?.length || 'Solo Block'} | Description: ${m.description?.substring(0, 100) || 'None'}`;
       }).join('\n');
 
-      setStatusText('Conducting Active AI Research...');
+      setStatusText('Applying Feedback & Synthesizing...');
       
       const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       
-      // 🚨 CRITICAL UPDATE: The prompt now demands actual research and a statistical table output
+      // Inject the historical feedback into the AI's system prompt if it exists
+      const feedbackContext = feedbackLedger.length > 0 
+        ? `\nCRITICAL USER FEEDBACK - DO NOT REPEAT THESE MISTAKES:\n${feedbackLedger.join('\n')}\n` 
+        : '';
+
       const prompt = `
-        You are a brutally honest, highly strategic Solution Engineer advisor for Jaja at Fallen Crown BV. 
-        Analyze the following deduplicated schedule. Output strictly as a single JSON object.
-        
+        You are a brutally honest, highly strategic advisor for Jaja at Fallen Crown BV. 
+        Analyze the following deduplicated schedule. Group minor/routine events together to aggressively shorten the list. Output strictly as a single JSON object.
+        ${feedbackContext}
         Rules for the JSON object structure:
-        1. "atAGlance": One sharp, executive-level paragraph summarizing the weekly posture and major friction points.
-        2. "weeklyStats": An array of objects to populate a visual table. Generate 3-4 key metrics based on the schedule (e.g., {"label": "High-Stakes Meetings", "count": 4}, {"label": "Focus Blocks", "count": 2}).
-        3. "events": An array of objects for each event containing:
-           - "title": (string) Event name.
-           - "objective": One brutal, objective sentence on the actual goal of this event.
-           - "prep": Actionable intelligence and actual research. DO NOT just say "find a gift". Actually suggest 3 specific gift ideas (leveraging themes like padel, music, or fashion). If a lunch in Amsterdam lacks a location, suggest 2 specific high-rated cafes. Do the research and summarize it.
-           - "wedge": If it's a meeting, a sharp question to control the room. If it's a solo block, a ruthless standard to hold Jaja accountable.
+        1. "atAGlance": One sharp paragraph summarizing the week's friction points.
+        2. "weeklyStats": Array of 3 key metrics (e.g., {"label": "Deep Work Hours", "count": 12}).
+        3. "businessEngagements": Array of clustered business/productivity events.
+           - "title": Name of the grouped or single event.
+           - "objective": Brutal business goal.
+           - "prep": Actionable intelligence (e.g., specific metrics to review, exact documents to prep).
+           - "wedge": A sharp question to control the room.
+        4. "leisureEngagements": Array of clustered personal, fitness, and family events.
+           - "title": Name of the event.
+           - "objective": Goal focused on presence, disengagement from work, or relationship building.
+           - "prep": Active research. Suggest specific highly-rated Amsterdam cafes if location is missing, or specific gift ideas.
+           - "wedge": A mental standard to stay present.
         
         Raw Schedule:
         ${promptData}
@@ -160,6 +224,50 @@ export default function App() {
     );
   }
 
+  // Updated render function to include Dia-styled feedback buttons
+  const renderEventCard = (item: Engagement, index: number, isBusiness: boolean) => {
+    const cardKey = `${item.title}-${index}`;
+    const voteStatus = votedCards[cardKey];
+
+    return (
+      <View key={item.id || index.toString()} style={styles.eventCard}>
+        <Text style={styles.cardTitle}>{item.title}</Text>
+        
+        <Text style={styles.label}>OBJECTIVE</Text>
+        <Text style={styles.bodyText}>{item.objective}</Text>
+
+        <Text style={styles.label}>{isBusiness ? "TACTICAL PREP" : "RESEARCH & LOGISTICS"}</Text>
+        <Text style={styles.prepText}>{item.prep}</Text>
+
+        <View style={styles.divider} />
+
+        <Text style={styles.label}>{isBusiness ? "THE WEDGE" : "PRESENCE STANDARD"}</Text>
+        <Text style={styles.wedgeText}>{item.wedge}</Text>
+
+        {/* The Feedback Loop UI */}
+        <View style={styles.feedbackContainer}>
+          <Text style={styles.feedbackLabel}>Calibrate Output</Text>
+          <View style={styles.feedbackButtons}>
+            <TouchableOpacity 
+              style={[styles.voteButton, voteStatus === 'up' && styles.voteButtonActive]} 
+              onPress={() => handleUpvote(item.title, index)}
+              disabled={!!voteStatus}
+            >
+              <Text style={styles.voteEmoji}>👍</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.voteButton, voteStatus === 'down' && styles.voteButtonActiveDown]} 
+              onPress={() => handleDownvote(item.title, item.wedge, index)}
+              disabled={!!voteStatus}
+            >
+              <Text style={styles.voteEmoji}>👎</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" />
@@ -185,13 +293,12 @@ export default function App() {
               <Text style={styles.retryText}>Retry</Text>
             </TouchableOpacity>
           </View>
-        ) : !battlePlan || battlePlan.events.length === 0 ? (
+        ) : !battlePlan || (battlePlan.businessEngagements.length === 0 && battlePlan.leisureEngagements.length === 0) ? (
           <Text style={styles.emptyText}>No events found across any calendars for the next 7 days.</Text>
         ) : (
           <View>
             <Text style={styles.sectionTitle}>At a glance</Text>
             
-            {/* 🚨 NEW LAYOUT: Side-by-side Executive Summary and Visual Table */}
             <View style={styles.executiveCard}>
               <View style={styles.glanceSection}>
                 <Text style={styles.glanceText}>{battlePlan.atAGlance}</Text>
@@ -207,23 +314,20 @@ export default function App() {
               </View>
             </View>
 
-            <Text style={styles.sectionTitle}>Tactical Timeline</Text>
-            {battlePlan.events.map((item, index) => (
-              <View key={item.id || index.toString()} style={styles.eventCard}>
-                <Text style={styles.cardTitle}>{item.title}</Text>
-                
-                <Text style={styles.label}>OBJECTIVE</Text>
-                <Text style={styles.bodyText}>{item.objective}</Text>
+            {battlePlan.businessEngagements && battlePlan.businessEngagements.length > 0 && (
+              <>
+                <Text style={styles.sectionTitle}>Business & Productivity</Text>
+                {battlePlan.businessEngagements.map((item, index) => renderEventCard(item, index, true))}
+              </>
+            )}
 
-                <Text style={styles.label}>PREPARATION & RESEARCH</Text>
-                <Text style={styles.prepText}>{item.prep}</Text>
+            {battlePlan.leisureEngagements && battlePlan.leisureEngagements.length > 0 && (
+              <>
+                <Text style={styles.sectionTitle}>Leisure & Personal</Text>
+                {battlePlan.leisureEngagements.map((item, index) => renderEventCard(item, index, false))}
+              </>
+            )}
 
-                <View style={styles.divider} />
-
-                <Text style={styles.label}>WEDGE</Text>
-                <Text style={styles.wedgeText}>{item.wedge}</Text>
-              </View>
-            ))}
           </View>
         )}
 
@@ -258,7 +362,6 @@ const styles = StyleSheet.create({
 
   sectionTitle: { color: '#111827', fontSize: 18, fontWeight: '600', marginBottom: 16, marginTop: 16, letterSpacing: -0.3, fontFamily: systemFont },
   
-  // Executive Dashboard Layout
   executiveCard: { flexDirection: 'row', backgroundColor: '#FFFFFF', padding: 20, borderRadius: 16, borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 32, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 4, elevation: 1 },
   glanceSection: { flex: 1.5, paddingRight: 16, borderRightWidth: 1, borderRightColor: '#E5E7EB' },
   glanceText: { color: '#374151', fontSize: 14, lineHeight: 22, fontFamily: systemFont },
@@ -272,9 +375,18 @@ const styles = StyleSheet.create({
   
   label: { color: '#9CA3AF', fontSize: 10, fontWeight: '700', letterSpacing: 1.2, marginBottom: 6, textTransform: 'uppercase', fontFamily: systemFont },
   bodyText: { color: '#374151', fontSize: 15, lineHeight: 22, marginBottom: 16, fontFamily: systemFont },
-  prepText: { color: '#D97706', fontSize: 15, lineHeight: 22, fontWeight: '500', marginBottom: 16, fontFamily: systemFont },
+  prepText: { color: '#8C6239', fontSize: 15, lineHeight: 22, fontWeight: '500', marginBottom: 16, fontFamily: systemFont },
   wedgeText: { color: '#111827', fontSize: 15, fontWeight: '600', fontStyle: 'italic', lineHeight: 22, fontFamily: systemFont },
   
   divider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 16 },
   emptyText: { color: '#6B7280', textAlign: 'center', marginTop: 40, fontSize: 16, fontFamily: systemFont },
+
+  // New Feedback UI Styles
+  feedbackContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 24, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
+  feedbackLabel: { color: '#9CA3AF', fontSize: 12, fontWeight: '500', fontFamily: systemFont },
+  feedbackButtons: { flexDirection: 'row', gap: 8 },
+  voteButton: { paddingVertical: 6, paddingHorizontal: 12, backgroundColor: '#F9F9FB', borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB' },
+  voteButtonActive: { backgroundColor: '#ECFDF5', borderColor: '#10B981' },
+  voteButtonActiveDown: { backgroundColor: '#FEF2F2', borderColor: '#EF4444' },
+  voteEmoji: { fontSize: 14 },
 });

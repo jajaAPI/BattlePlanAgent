@@ -1,19 +1,17 @@
 /**
- * App.tsx - v1.19 (Supabase Diagnostic Ping)
+ * App.tsx - v1.21 (Cloud Integration & Persistent Archives)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Overhauls the top overview into a unified editorial header, implements a rotating loading state, and tests the Supabase connection.
+ * Purpose: Connects the engine to Supabase to automatically archive generated briefings and sync the AI feedback ledger to the cloud.
  */
 
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, ScrollView, SafeAreaView, StatusBar, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import GoogleLogin from './GoogleLogin';
-// 🚨 NEW LOGIC: Import the Supabase client to test the connection
+// 🚨 Import our SSR-safe Supabase client
 import { supabase } from '../lib/supabase';
 
-// Initialize the Gemini AI client
 const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
 
 interface Engagement {
@@ -43,49 +41,36 @@ export default function App() {
   const [feedbackLedger, setFeedbackLedger] = useState<string[]>([]);
   const [votedCards, setVotedCards] = useState<{[key: string]: 'up' | 'down'}>({});
 
-  // 🚨 NEW LOGIC: Supabase Diagnostic Ping
-  // This runs exactly once when the app mounts to verify the .env keys and network connection
+  // 🚨 CLOUD UPDATE: Hydrate feedback ledger directly from Supabase instead of local storage
   useEffect(() => {
-    const pingSupabase = async () => {
+    const loadCloudFeedback = async () => {
       try {
-        const { data, error } = await supabase.auth.getSession();
-        if (error) {
-          console.error("❌ SUPABASE CONNECTION FAILED:", error.message);
-        } else {
-          console.log("✅ SUPABASE CONNECTION SUCCESS: Engine is online.");
-        }
-      } catch (err) {
-        console.error("❌ SUPABASE FATAL CRASH:", err);
-      }
-    };
-    pingSupabase();
-  }, []);
-
-  // Hydrate feedback ledger
-  useEffect(() => {
-    const loadFeedback = async () => {
-      try {
-        const savedFeedback = await AsyncStorage.getItem('@jaja_feedback_ledger');
-        if (savedFeedback) {
-          setFeedbackLedger(JSON.parse(savedFeedback));
+        const { data, error } = await supabase
+          .from('feedback_ledger')
+          .select('rule_text')
+          .order('created_at', { ascending: false })
+          .limit(10);
+          
+        if (data && !error) {
+          setFeedbackLedger(data.map(row => row.rule_text));
+          console.log("✅ Cloud feedback ledger synced.");
         }
       } catch (e) {
-        console.error("Failed to load feedback ledger", e);
+        console.error("❌ Failed to load cloud ledger", e);
       }
     };
-    loadFeedback();
+    loadCloudFeedback();
   }, []);
 
-  // Dynamic Loading Engine
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (loading) {
       const tips = [
         "Calibrating strategic objectives...",
-        "Reviewing past feedback ledgers...",
+        "Pulling latest parameters from the cloud ledger...",
         "Cross-referencing leisure with presence standards...",
         "Identifying tactical wedges for upcoming meetings...",
-        "Synthesizing your weekly posture..."
+        "Archiving data to secure storage..."
       ];
       let i = 0;
       setLoadingTip(tips[0]);
@@ -94,23 +79,29 @@ export default function App() {
         setLoadingTip(tips[i]);
       }, 2500);
     }
-    // Cleanup the interval when loading finishes
     return () => clearInterval(interval);
   }, [loading]);
 
-  // Execute pipeline on auth
   useEffect(() => {
     if (token) {
       executeBattlePlanPipeline(token);
     }
   }, [token]);
 
+  // 🚨 CLOUD UPDATE: Push rejections directly to the Supabase feedback table
   const handleDownvote = async (title: string, wedge: string, index: number) => {
     setVotedCards(prev => ({ ...prev, [`${title}-${index}`]: 'down' }));
+    
     const newRule = `For the event '${title}', you suggested: "${wedge}". The user REJECTED this. Shift your approach to be more grounded and specific next time.`;
     const updatedLedger = [...feedbackLedger, newRule].slice(-10);
     setFeedbackLedger(updatedLedger);
-    await AsyncStorage.setItem('@jaja_feedback_ledger', JSON.stringify(updatedLedger));
+    
+    try {
+      await supabase.from('feedback_ledger').insert([{ rule_text: newRule }]);
+      console.log("✅ Feedback securely logged to cloud.");
+    } catch (e) {
+      console.error("❌ Cloud sync failed:", e);
+    }
   };
 
   const handleUpvote = (title: string, index: number) => {
@@ -229,6 +220,19 @@ export default function App() {
       
       const synthesizedPlan = JSON.parse(aiText);
       setBattlePlan(synthesizedPlan);
+
+      // 🚨 CLOUD UPDATE: Archive the generated briefing to the database
+      try {
+        await supabase.from('briefings').insert([{
+          at_a_glance: synthesizedPlan.atAGlance,
+          weekly_stats: synthesizedPlan.weeklyStats,
+          business_engagements: synthesizedPlan.businessEngagements,
+          leisure_engagements: synthesizedPlan.leisureEngagements
+        }]);
+        console.log("✅ Strategic brief successfully archived to Supabase.");
+      } catch (cloudError) {
+        console.error("❌ Failed to archive briefing:", cloudError);
+      }
 
     } catch (error) {
       console.error("Pipeline Failed:", error);

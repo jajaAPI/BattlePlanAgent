@@ -1,7 +1,7 @@
 /**
- * App.tsx - v1.18 (Seamless Editorial Header & Dynamic Loading)
+ * App.tsx - v1.19 (Supabase Diagnostic Ping)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Overhauls the top overview into a unified editorial header and implements a rotating, engaging loading state.
+ * Purpose: Overhauls the top overview into a unified editorial header, implements a rotating loading state, and tests the Supabase connection.
  */
 
 import React, { useState, useEffect } from 'react';
@@ -10,6 +10,8 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import GoogleLogin from './GoogleLogin';
+// 🚨 NEW LOGIC: Import the Supabase client to test the connection
+import { supabase } from '../lib/supabase';
 
 // Initialize the Gemini AI client
 const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
@@ -34,14 +36,30 @@ export default function App() {
   const [battlePlan, setBattlePlan] = useState<BattlePlanState | null>(null);
   const [loading, setLoading] = useState(false);
   
-  // Technical status of the pipeline (e.g., "Mapping Layers...")
   const [statusText, setStatusText] = useState(''); 
-  // Dynamic tactical thought to keep the user engaged while waiting
   const [loadingTip, setLoadingTip] = useState('');
   
   const [hasError, setHasError] = useState(false); 
   const [feedbackLedger, setFeedbackLedger] = useState<string[]>([]);
   const [votedCards, setVotedCards] = useState<{[key: string]: 'up' | 'down'}>({});
+
+  // 🚨 NEW LOGIC: Supabase Diagnostic Ping
+  // This runs exactly once when the app mounts to verify the .env keys and network connection
+  useEffect(() => {
+    const pingSupabase = async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) {
+          console.error("❌ SUPABASE CONNECTION FAILED:", error.message);
+        } else {
+          console.log("✅ SUPABASE CONNECTION SUCCESS: Engine is online.");
+        }
+      } catch (err) {
+        console.error("❌ SUPABASE FATAL CRASH:", err);
+      }
+    };
+    pingSupabase();
+  }, []);
 
   // Hydrate feedback ledger
   useEffect(() => {
@@ -58,8 +76,7 @@ export default function App() {
     loadFeedback();
   }, []);
 
-  // 🚨 NEW LOGIC: Dynamic Loading Engine
-  // Rotates through a list of thoughts every 2.5 seconds while the app is in a loading state
+  // Dynamic Loading Engine
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (loading) {
@@ -77,7 +94,7 @@ export default function App() {
         setLoadingTip(tips[i]);
       }, 2500);
     }
-    // Cleanup the interval when loading finishes to prevent memory leaks
+    // Cleanup the interval when loading finishes
     return () => clearInterval(interval);
   }, [loading]);
 
@@ -295,7 +312,6 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
-        {/* 🚨 UI UPDATE: Dynamic Loading Screen */}
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#111" />
@@ -315,7 +331,6 @@ export default function App() {
         ) : (
           <View>
             
-            {/* 🚨 UI UPDATE: Unified Editorial Header (Replaces Bento Boxes) */}
             <View style={styles.executiveHeader}>
               <Text style={styles.executiveGreeting}>{battlePlan.atAGlance}</Text>
               
@@ -365,7 +380,6 @@ const styles = StyleSheet.create({
   authHeader: { color: '#111', fontSize: 36, fontWeight: '800', marginBottom: 8, letterSpacing: -1, fontFamily: systemFont },
   authSubtext: { color: '#666', fontSize: 16, marginBottom: 32, fontFamily: systemFont },
   
-  // Loading UI Styles
   loadingContainer: { marginTop: 80, alignItems: 'center', paddingHorizontal: 20 },
   loadingStatusText: { color: '#111', marginTop: 24, fontSize: 16, fontWeight: '700', fontFamily: systemFont, textAlign: 'center' },
   loadingTipText: { color: '#888', marginTop: 12, fontSize: 14, fontStyle: 'italic', fontFamily: systemFont, textAlign: 'center', lineHeight: 22 },
@@ -378,7 +392,6 @@ const styles = StyleSheet.create({
 
   sectionTitleMain: { color: '#111', fontSize: 22, fontWeight: '700', marginTop: 32, marginBottom: 20, letterSpacing: -0.5, fontFamily: systemFont },
   
-  // 🚨 UI UPDATE: Unified Executive Header Styles
   executiveHeader: { marginBottom: 40, paddingBottom: 32, borderBottomWidth: 1, borderBottomColor: '#EAEAEA' },
   executiveGreeting: { color: '#111', fontSize: 22, lineHeight: 32, fontWeight: '400', marginBottom: 24, fontFamily: systemFont },
   metricsRow: { flexDirection: 'row', gap: 12, flexWrap: 'wrap' },

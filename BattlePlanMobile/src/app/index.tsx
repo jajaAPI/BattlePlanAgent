@@ -1,8 +1,8 @@
 /**
- * index.tsx - v1.30 (Web Platform Patch)
+ * index.tsx - v1.31 (RLS-Ready & Expo Go Safeguard)
  * Author: Jaja (Fallen Crown BV)
- * Purpose: Defeats WebKit page clipping, persists sessions, introduces the History Engine, 
- * executes the AI pipeline silently in the background before waking, and safely bypasses native modules on web.
+ * Purpose: Secure database writes using authenticated user IDs, prevent Expo Go 
+ * crashes via strict try/catch on native modules, and maintain full UI functionality.
  */
 
 import React, { useState, useEffect } from 'react';
@@ -13,147 +13,150 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
-import * as TaskManager from 'expo-task-manager';
-import * as BackgroundFetch from 'expo-background-fetch';
-import * as Notifications from 'expo-notifications';
-
 import GoogleLogin from './GoogleLogin';
 import { supabase } from '../lib/supabase';
 
 const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
 
-// Define the unique name for the background task
+const APP_VERSION = 'v1.31';
 const BACKGROUND_FETCH_TASK = 'background-radar-fetch';
 
-// Configure how notifications appear when the app is in the foreground
-// Wrap in platform check to avoid potential web warnings
+// Safely instantiate native modules. If running in standard Expo Go, 
+// this will catch the missing native binary error and prevent a fatal crash.
+let TaskManager: any = null;
+let BackgroundFetch: any = null;
+let Notifications: any = null;
+
 if (Platform.OS !== 'web') {
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: false,
-      shouldSetBadge: false,
-    }),
-  });
-}
+  try {
+    TaskManager = require('expo-task-manager');
+    BackgroundFetch = require('expo-background-fetch');
+    Notifications = require('expo-notifications');
 
-// DEFINING BACKGROUND TASK: Must be declared outside of the component lifecycle to run headlessly
-// NEW LOGIC: Shield native task definition from the web compiler to prevent crashes
-if (Platform.OS !== 'web') {
-  TaskManager.defineTask(BACKGROUND_FETCH_TASK, async () => {
-    try {
-      // 1. Check for valid session token in background
-      const savedToken = await AsyncStorage.getItem('@jaja_auth_token');
-      if (!savedToken) return BackgroundFetch.BackgroundFetchResult.NoData;
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: false,
+        shouldSetBadge: false,
+      }),
+    });
 
-      // 2. Execute Calendar Sync
-      const startOfToday = new Date();
-      startOfToday.setHours(0, 0, 0, 0);
-      const horizonDate = new Date();
-      horizonDate.setDate(startOfToday.getDate() + 7);
+    TaskManager.defineTask(BACKGROUND_FETCH_TASK, async () => {
+      try {
+        const savedToken = await AsyncStorage.getItem('@jaja_auth_token');
+        if (!savedToken) return BackgroundFetch.BackgroundFetchResult.NoData;
 
-      const calendarListResponse = await fetch(
-        `https://www.googleapis.com/calendar/v3/users/me/calendarList`,
-        { headers: { Authorization: `Bearer ${savedToken}` } }
-      );
-      if (!calendarListResponse.ok) return BackgroundFetch.BackgroundFetchResult.Failed;
-      
-      const calendarListData = await calendarListResponse.json();
-      const activeCalendars = (calendarListData.items || []).filter((c: any) => c.selected);
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const horizonDate = new Date();
+        horizonDate.setDate(startOfToday.getDate() + 7);
 
-      let rawEvents: any[] = [];
-      await Promise.all(activeCalendars.map(async (calendar: any) => {
-        const eventsResponse = await fetch(
-          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?timeMin=${startOfToday.toISOString()}&timeMax=${horizonDate.toISOString()}&singleEvents=true&orderBy=startTime`,
+        const calendarListResponse = await fetch(
+          `https://www.googleapis.com/calendar/v3/users/me/calendarList`,
           { headers: { Authorization: `Bearer ${savedToken}` } }
         );
-        if (eventsResponse.ok) {
-          const eventsData = await eventsResponse.json();
-          if (eventsData.items) rawEvents = rawEvents.concat(eventsData.items);
-        }
-      }));
-
-      const uniqueEventsMap = new Map();
-      rawEvents.forEach((event) => {
-        const timeKey = event.start?.dateTime || event.start?.date;
-        const compositeKey = `${event.summary}-${timeKey}`;
-        if (!uniqueEventsMap.has(compositeKey)) uniqueEventsMap.set(compositeKey, event);
-      });
-      
-      let deduplicatedEvents = Array.from(uniqueEventsMap.values());
-      if (deduplicatedEvents.length === 0) return BackgroundFetch.BackgroundFetchResult.NoData;
-
-      // 3. Fetch latest calibration rules from Supabase ledger
-      const { data: rulesData } = await supabase
-        .from('feedback_ledger')
-        .select('rule_text')
-        .order('created_at', { ascending: false })
-        .limit(10);
-      const rules = rulesData?.map(r => r.rule_text) || [];
-      
-      // 4. Construct AI Payload
-      const promptData = deduplicatedEvents.map((m: any) => {
-        const isAllDay = m.start?.date ? "ALL-DAY TASK" : "TIMED EVENT";
-        const locationStr = m.location ? `Location: ${m.location}` : "Location: MISSING";
-        return `Event: ${m.summary} | Type: ${isAllDay} | ${locationStr} | Attendees: ${m.attendees?.length || 'Solo Block'} | Description: ${m.description?.substring(0, 100) || 'None'}`;
-      }).join('\n');
-
-      const feedbackContext = rules.length > 0 ? `\nCRITICAL FEEDBACK - AVOID THESE MISTAKES:\n${rules.join('\n')}\n` : '';
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
-      const prompt = `
-        You are a highly competent, loyal, and grounded human Chief of Staff to Jaja at Fallen Crown BV. 
-        Analyze the deduplicated schedule. Group minor/routine events to aggressively shorten the list. 
-        ${feedbackContext}
-        Rules for the JSON object structure:
-        1. "atAGlance": A warm, fiercely concise, and highly grounded 2-sentence human briefing. Talk directly to Jaja like a real person. Zero AI filler, zero corporate buzzwords. Just the reality of his week.
-        2. "weeklyStats": Array of 3 key metrics (e.g., {"label": "Client Pushes", "count": 4}).
-        3. "businessEngagements": Array of clustered business events.
-           - "title": Clean event name.
-           - "objective": Brutal business goal.
-           - "prep": Actionable intelligence (metrics to review, documents to prep).
-           - "wedge": A sharp question to control the room.
-        4. "leisureEngagements": Array of clustered personal/family events.
-           - "title": Event name.
-           - "objective": Goal focused on presence, health, or family.
-           - "prep": Active research (e.g., highly-rated cafes if location missing, specific gift ideas).
-           - "wedge": A mental standard to stay present.
+        if (!calendarListResponse.ok) return BackgroundFetch.BackgroundFetchResult.Failed;
         
-        Raw Schedule:
-        ${promptData}
+        const calendarListData = await calendarListResponse.json();
+        const activeCalendars = (calendarListData.items || []).filter((c: any) => c.selected);
+
+        let rawEvents: any[] = [];
+        await Promise.all(activeCalendars.map(async (calendar: any) => {
+          const eventsResponse = await fetch(
+            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?timeMin=${startOfToday.toISOString()}&timeMax=${horizonDate.toISOString()}&singleEvents=true&orderBy=startTime`,
+            { headers: { Authorization: `Bearer ${savedToken}` } }
+          );
+          if (eventsResponse.ok) {
+            const eventsData = await eventsResponse.json();
+            if (eventsData.items) rawEvents = rawEvents.concat(eventsData.items);
+          }
+        }));
+
+        const uniqueEventsMap = new Map();
+        rawEvents.forEach((event) => {
+          const timeKey = event.start?.dateTime || event.start?.date;
+          const compositeKey = `${event.summary}-${timeKey}`;
+          if (!uniqueEventsMap.has(compositeKey)) uniqueEventsMap.set(compositeKey, event);
+        });
         
-        Output strictly as JSON. No markdown formatting.
-      `;
+        let deduplicatedEvents = Array.from(uniqueEventsMap.values());
+        if (deduplicatedEvents.length === 0) return BackgroundFetch.BackgroundFetchResult.NoData;
 
-      const aiResponse = await model.generateContent(prompt);
-      let aiText = aiResponse.response.text();
-      aiText = aiText.replace(/```json/g, '').replace(/```/g, '').trim();
-      const synthesizedPlan = JSON.parse(aiText);
+        const { data: rulesData } = await supabase
+          .from('feedback_ledger')
+          .select('rule_text')
+          .order('created_at', { ascending: false })
+          .limit(10);
+        const rules = rulesData?.map((r: any) => r.rule_text) || [];
+        
+        const promptData = deduplicatedEvents.map((m: any) => {
+          const isAllDay = m.start?.date ? "ALL-DAY TASK" : "TIMED EVENT";
+          const locationStr = m.location ? `Location: ${m.location}` : "Location: MISSING";
+          return `Event: ${m.summary} | Type: ${isAllDay} | ${locationStr} | Attendees: ${m.attendees?.length || 'Solo Block'} | Description: ${m.description?.substring(0, 100) || 'None'}`;
+        }).join('\n');
 
-      // 5. Save the compiled brief locally for instant UI load, and to the cloud history
-      await AsyncStorage.setItem('@jaja_latest_briefing', JSON.stringify(synthesizedPlan));
-      await supabase.from('briefings').insert([{
-        at_a_glance: synthesizedPlan.atAGlance,
-        weekly_stats: synthesizedPlan.weeklyStats,
-        business_engagements: synthesizedPlan.businessEngagements,
-        leisure_engagements: synthesizedPlan.leisureEngagements
-      }]);
+        const feedbackContext = rules.length > 0 ? `\nCRITICAL FEEDBACK - AVOID THESE MISTAKES:\n${rules.join('\n')}\n` : '';
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-      // 6. Trigger local push notification to notify you the brief is ready
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: 'Radar Updated',
-          body: 'Your executive brief has been compiled and is ready for review.',
-        },
-        trigger: null, // Fire immediately
-      });
+        const prompt = `
+          You are a highly competent, loyal, and grounded human Chief of Staff to Jaja at Fallen Crown BV. 
+          Analyze the deduplicated schedule. Group minor/routine events to aggressively shorten the list. 
+          ${feedbackContext}
+          Rules for the JSON object structure:
+          1. "atAGlance": A warm, fiercely concise, and highly grounded 2-sentence human briefing. Talk directly to Jaja like a real person. Zero AI filler, zero corporate buzzwords. Just the reality of his week.
+          2. "weeklyStats": Array of 3 key metrics (e.g., {"label": "Client Pushes", "count": 4}).
+          3. "businessEngagements": Array of clustered business events.
+             - "title": Clean event name.
+             - "objective": Brutal business goal.
+             - "prep": Actionable intelligence (metrics to review, documents to prep).
+             - "wedge": A sharp question to control the room.
+          4. "leisureEngagements": Array of clustered personal/family events.
+             - "title": Event name.
+             - "objective": Goal focused on presence, health, or family.
+             - "prep": Active research (e.g., highly-rated cafes if location missing, specific gift ideas).
+             - "wedge": A mental standard to stay present.
+          
+          Raw Schedule:
+          ${promptData}
+          
+          Output strictly as JSON. No markdown formatting.
+        `;
 
-      return BackgroundFetch.BackgroundFetchResult.NewData;
-    } catch (error) {
-      console.error("Background task failed:", error);
-      return BackgroundFetch.BackgroundFetchResult.Failed;
-    }
-  });
+        const aiResponse = await model.generateContent(prompt);
+        let aiText = aiResponse.response.text();
+        aiText = aiText.replace(/```json/g, '').replace(/```/g, '').trim();
+        const synthesizedPlan = JSON.parse(aiText);
+
+        await AsyncStorage.setItem('@jaja_latest_briefing', JSON.stringify(synthesizedPlan));
+
+        // Pull the active user session for background cloud sync
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        await supabase.from('briefings').insert([{
+          at_a_glance: synthesizedPlan.atAGlance,
+          weekly_stats: synthesizedPlan.weeklyStats,
+          business_engagements: synthesizedPlan.businessEngagements,
+          leisure_engagements: synthesizedPlan.leisureEngagements,
+          user_id: session?.user?.id // Link to specific user for RLS
+        }]);
+
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: 'Radar Updated',
+            body: 'Your executive brief has been compiled and is ready for review.',
+          },
+          trigger: null, 
+        });
+
+        return BackgroundFetch.BackgroundFetchResult.NewData;
+      } catch (error) {
+        console.error("Background task failed:", error);
+        return BackgroundFetch.BackgroundFetchResult.Failed;
+      }
+    });
+  } catch (err) {
+    console.log("Native background modules unavailable in Expo Go. Degraded mode active.");
+  }
 }
 
 interface Engagement {
@@ -173,6 +176,7 @@ interface BattlePlanState {
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
+  const [user, setUser] = useState<any>(null); // State to hold authenticated Supabase user
   const [battlePlan, setBattlePlan] = useState<BattlePlanState | null>(null);
   const [loading, setLoading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -193,6 +197,10 @@ export default function App() {
       try {
         const savedToken = await AsyncStorage.getItem('@jaja_auth_token');
         if (savedToken) setToken(savedToken);
+        
+        // Fetch active Supabase session to bind cloud writes to this user
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) setUser(session.user);
       } catch (e) {
         console.error("Failed to rehydrate session:", e);
       }
@@ -202,26 +210,22 @@ export default function App() {
 
   useEffect(() => {
     const registerBackgroundTasks = async () => {
-      // NEW LOGIC: Hard abort on web platform. Background fetch is mobile only.
-      if (Platform.OS === 'web') {
-        console.log('Skipping background fetch registration on web platform.');
-        return; 
-      }
-
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
-      }
-      
-      if (finalStatus === 'granted') {
-        // Register task with OS. Interval is a minimum guideline for the OS scheduler.
-        await BackgroundFetch.registerTaskAsync(BACKGROUND_FETCH_TASK, {
-          minimumInterval: 60 * 60 * 4, // 4 hours
-          stopOnTerminate: false, 
-          startOnBoot: true, 
-        });
+      // Execute registration only if native module successfully loaded
+      if (BackgroundFetch && Notifications) {
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let finalStatus = existingStatus;
+        if (existingStatus !== 'granted') {
+          const { status } = await Notifications.requestPermissionsAsync();
+          finalStatus = status;
+        }
+        
+        if (finalStatus === 'granted') {
+          await BackgroundFetch.registerTaskAsync(BACKGROUND_FETCH_TASK, {
+            minimumInterval: 60 * 60 * 4, 
+            stopOnTerminate: false, 
+            startOnBoot: true, 
+          });
+        }
       }
     };
     registerBackgroundTasks();
@@ -233,6 +237,7 @@ export default function App() {
       await AsyncStorage.setItem('@jaja_auth_token', newToken);
     } else {
       await AsyncStorage.removeItem('@jaja_auth_token');
+      setUser(null);
     }
   };
 
@@ -409,7 +414,16 @@ export default function App() {
     const newRule = `For the event '${title}', you suggested: "${wedge}". The user REJECTED this. Shift your approach to be more grounded and specific next time.`;
     const updatedLedger = [...feedbackLedger, newRule].slice(-10);
     setFeedbackLedger(updatedLedger);
-    try { await supabase.from('feedback_ledger').insert([{ rule_text: newRule }]); } catch (e) { console.error(e); }
+    
+    // Bind feedback write to authenticated user
+    try { 
+      await supabase.from('feedback_ledger').insert([{ 
+        rule_text: newRule,
+        user_id: user?.id 
+      }]); 
+    } catch (e) { 
+      console.error(e); 
+    }
   };
 
   const handleUpvote = (title: string, index: number) => {
@@ -522,7 +536,8 @@ export default function App() {
           at_a_glance: synthesizedPlan.atAGlance,
           weekly_stats: synthesizedPlan.weeklyStats,
           business_engagements: synthesizedPlan.businessEngagements,
-          leisure_engagements: synthesizedPlan.leisureEngagements
+          leisure_engagements: synthesizedPlan.leisureEngagements,
+          user_id: user?.id // Binds the historical cloud data to this specific user via RLS
         }]);
       } catch (cloudError) {
         console.error("Failed to archive briefing:", cloudError);
@@ -602,7 +617,7 @@ export default function App() {
         <View style={styles.headerRow}>
           <Text style={styles.header}>
             {viewMode === 'radar' ? 'Radar' : 'Archive'}
-            <Text style={{ fontSize: 12, color: '#888888', fontWeight: 'bold' }}> v1.30</Text>
+            <Text style={{ fontSize: 12, color: '#888888', fontWeight: 'bold' }}> {APP_VERSION}</Text>
           </Text>
           <View style={styles.headerActions}>
             

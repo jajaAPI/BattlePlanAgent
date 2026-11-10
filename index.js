@@ -17,6 +17,9 @@ const SCOPES = ['https://www.googleapis.com/auth/calendar.readonly', 'https://ww
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// gemini-2.5-flash is deprecated and reroutes to gemini-3.5-flash-lite on 1 Dec 2026.
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
+
 async function runAgent() {
     try {
         const auth = await authenticate();
@@ -99,7 +102,7 @@ async function runAgent() {
 }
 
 async function generateMasterReport(meetings) {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
     
     const meetingsList = meetings.map((m, i) => 
         `MEETING ${i+1}: ${m.title}\nCONTEXT: ${m.emails}\nDESC: ${m.description}`

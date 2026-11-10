@@ -17,6 +17,8 @@ import GoogleLogin from './GoogleLogin';
 import { supabase } from '../lib/supabase';
 
 const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY!);
+// gemini-2.5-flash is deprecated and reroutes to gemini-3.5-flash-lite on 1 Dec 2026.
+const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
 const APP_VERSION = 'v1.31';
 const BACKGROUND_FETCH_TASK = 'background-radar-fetch';
@@ -96,7 +98,7 @@ if (Platform.OS !== 'web') {
         }).join('\n');
 
         const feedbackContext = rules.length > 0 ? `\nCRITICAL FEEDBACK - AVOID THESE MISTAKES:\n${rules.join('\n')}\n` : '';
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
         const prompt = `
           You are a highly competent, loyal, and grounded human Chief of Staff to Jaja at Fallen Crown BV. 
@@ -496,7 +498,7 @@ export default function App() {
       }).join('\n');
 
       setStatusText('Drafting Executive Briefing...');
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+      const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
       const feedbackContext = feedbackLedger.length > 0 ? `\nCRITICAL FEEDBACK - AVOID THESE MISTAKES:\n${feedbackLedger.join('\n')}\n` : '';
 
       const prompt = `
